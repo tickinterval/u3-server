@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>u3ware Admin Console</title>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="logo">u3</div>
+          <div>
+            <div class="title">u3ware</div>
+            <div class="subtitle">Admin console</div>
+          </div>
+        </div>
+
+        <div class="nav">
+          <button class="nav-btn is-active" data-view="keys">Keys</button>
+          <button class="nav-btn" data-view="devices">Devices</button>
+          <button class="nav-btn" data-view="events">Events</button>
+        </div>
+
+        <div class="sidebar-card">
+          <div class="sidebar-title">Quick actions</div>
+          <button id="create-key-open" class="ghost full">Create key</button>
+          <button id="refresh-all" class="ghost full">Refresh data</button>
+        </div>
+
+        <div class="hint">
+          This UI runs locally and talks to your VPS through the API.
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div>
+            <h1 id="view-title">Keys</h1>
+            <p id="view-subtitle">Manage subscriptions, products and devices.</p>
+          </div>
+          <div class="top-actions">
+            <div class="search">
+              <input id="key-input" type="text" placeholder="Search by key..." />
+              <button id="search-btn" class="primary">Search</button>
+            </div>
+            <div class="actions">
+              <button id="revoke-btn" class="ghost danger">Revoke</button>
+              <button id="unrevoke-btn" class="ghost">Unrevoke</button>
+            </div>
+          </div>
+        </header>
+
+        <section class="stats">
+          <div class="stat-card">
+            <div class="stat-label">Last key created</div>
+            <div id="stat-last-key" class="stat-value">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Last validation</div>
+            <div id="stat-last-event" class="stat-value">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Revoked keys</div>
+            <div id="stat-revoked" class="stat-value">—</div>
+          </div>
+        </section>
+
+        <section class="grid">
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Key details</div>
+                <div class="panel-sub">Selected key metadata</div>
+              </div>
+              <button id="copy-key" class="ghost small">Copy key</button>
+            </div>
+            <div id="key-details" class="panel-body empty">Select a key to view details.</div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">Products</div>
+                <div class="panel-sub">Subscriptions attached to this key</div>
+              </div>
+            </div>
+            <div id="products" class="panel-body empty">No products.</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Assign product</div>
+              <div class="panel-sub">Attach product to selected key</div>
+            </div>
+          </div>
+          <div class="panel-body form-row">
+            <input id="product-input" type="text" placeholder="Product code (e.g. blitzrelease)" />
+            <input id="days-input" type="text" placeholder="Days (optional)" />
+            <button id="assign-btn" class="primary">Assign</button>
+            <span id="assign-status" class="status"></span>
+          </div>
+        </section>
+
+        <section class="panel" data-view-panel="devices">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Devices</div>
+              <div class="panel-sub">Active and blocked devices</div>
+            </div>
+          </div>
+          <div id="devices" class="panel-body empty">No devices.</div>
+        </section>
+
+        <section class="panel" data-view-panel="events">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Events</div>
+              <div class="panel-sub">Recent activity and security logs</div>
+            </div>
+            <div class="filters">
+              <select id="event-filter">
+                <option value="">All types</option>
+                <option value="validate_ok">validate_ok</option>
+                <option value="validate_invalid">validate_invalid</option>
+                <option value="download">download</option>
+                <option value="inject_ok">inject_ok</option>
+                <option value="inject_fail">inject_fail</option>
+                <option value="download_fail">download_fail</option>
+                <option value="verify_fail">verify_fail</option>
+              </select>
+              <input id="event-limit" type="text" value="50" />
+              <button id="events-refresh" class="ghost small">Refresh</button>
+            </div>
+          </div>
+          <div id="events" class="panel-body empty">No events.</div>
+        </section>
+
+        <section class="panel" data-view-panel="keys">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title">Latest keys</div>
+              <div class="panel-sub">Click a row to inspect</div>
+            </div>
+          </div>
+          <div class="panel-body">
+            <table class="table" id="keys-table">
+              <thead>
+                <tr>
+                  <th>Key</th>
+                  <th>Days</th>
+                  <th>Created</th>
+                  <th>Activated</th>
+                  <th>Expires</th>
+                  <th>Revoked</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div class="modal" id="create-modal">
+      <div class="modal-card">
+        <div class="modal-head">
+          <div>
+            <div class="modal-title">Create new key</div>
+            <div class="modal-sub">Generate a key and optional products.</div>
+          </div>
+          <button id="create-close" class="ghost small">Close</button>
+        </div>
+        <div class="modal-body form-stack">
+          <input id="new-key-input" type="text" placeholder="Leave empty to auto-generate" />
+          <input id="new-days-input" type="text" placeholder="Days (default 7)" />
+          <input id="new-products-input" type="text" placeholder="Products CSV (e.g. blitzrelease,blitzbeta)" />
+          <div class="row">
+            <button id="create-btn" class="primary">Create key</button>
+            <span id="create-status" class="status"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

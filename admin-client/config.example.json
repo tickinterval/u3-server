@@ -1,0 +1,5 @@
+{
+  "apiBaseUrl": "https://example.com",
+  "adminToken": "change_me",
+  "listenPort": 5175
+}
