@@ -253,6 +253,31 @@ button {
   color: var(--muted);
 }
 
+.device-card {
+  display: grid;
+  gap: 4px;
+}
+
+.device-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.device-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.event-row {
+  display: grid;
+  gap: 4px;
+}
+
+.event-meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .empty {
   font-style: italic;
 }

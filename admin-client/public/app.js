@@ -54,6 +54,27 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+function escapeAttr(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/'/g, '&#39;')
+    .replace(/\r?\n/g, ' ');
+}
+
+function truncateText(value, maxLen) {
+  const text = String(value || '');
+  if (text.length <= maxLen) {
+    return text;
+  }
+  if (maxLen <= 3) {
+    return text.slice(0, maxLen);
+  }
+  return text.slice(0, maxLen - 3) + '...';
+}
+
 function normalizeListResponse(data, key) {
   if (Array.isArray(data)) {
     return { ok: true, [key]: data };
@@ -72,6 +93,112 @@ function getKeyValue(row) {
     return '-';
   }
   return row.key_plain || row.key_hash || '-';
+}
+
+function formatDeviceNumber(value, unit) {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) {
+    return '';
+  }
+  const fixed = num.toFixed(1);
+  const text = fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed;
+  return unit ? `${text} ${unit}` : text;
+}
+
+function parseDeviceInfo(value) {
+  if (!value) {
+    return {};
+  }
+  if (typeof value === 'object') {
+    return value;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    if (typeof parsed === 'string') {
+      return JSON.parse(parsed);
+    }
+    return parsed || {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function buildDeviceSummary(info) {
+  if (!info || typeof info !== 'object') {
+    return '<div class="device-meta">No device details.</div>';
+  }
+  const lines = [];
+  const nameLine = [info.name, info.os, info.build].filter(Boolean).join(' | ');
+  const hwLine = [info.cpu, info.gpu].filter(Boolean).join(' | ');
+  const specParts = [];
+  if (info.arch) specParts.push(String(info.arch));
+  if (info.cores) specParts.push(`${info.cores} cores`);
+  const ram = formatDeviceNumber(info.ram_gb, 'GB RAM');
+  if (ram) specParts.push(ram);
+  const disk = formatDeviceNumber(info.disk_gb, 'GB disk');
+  if (disk) specParts.push(disk);
+  const specLine = specParts.join(' | ');
+  const localeLine = [info.locale, info.timezone].filter(Boolean).join(' | ');
+  if (nameLine) lines.push(`<div class="device-title">${escapeHtml(nameLine)}</div>`);
+  if (hwLine) lines.push(`<div class="device-meta">${escapeHtml(hwLine)}</div>`);
+  if (specLine) lines.push(`<div class="device-meta">${escapeHtml(specLine)}</div>`);
+  if (localeLine) lines.push(`<div class="device-meta">${escapeHtml(localeLine)}</div>`);
+  if (!lines.length) {
+    return '<div class="device-meta">No device details.</div>';
+  }
+  return lines.join('');
+}
+
+function buildDeviceTooltip(info) {
+  if (!info || typeof info !== 'object') {
+    return '';
+  }
+  const parts = [];
+  const add = (label, value) => {
+    if (value) {
+      parts.push(`${label}=${value}`);
+    }
+  };
+  add('name', info.name);
+  add('os', info.os);
+  add('build', info.build);
+  add('arch', info.arch);
+  add('cpu', info.cpu);
+  add('gpu', info.gpu);
+  if (info.cores) add('cores', info.cores);
+  const ram = formatDeviceNumber(info.ram_gb, 'GB');
+  if (ram) add('ram', ram);
+  const disk = formatDeviceNumber(info.disk_gb, 'GB');
+  if (disk) add('disk', disk);
+  add('locale', info.locale);
+  add('timezone', info.timezone);
+  add('bios', info.bios);
+  add('board', info.board);
+  add('smbios', info.smbios);
+  if (info.hwid_score) add('hwid_score', info.hwid_score);
+  if (Array.isArray(info.hwid_flags) && info.hwid_flags.length) {
+    add('hwid_flags', info.hwid_flags.join(','));
+  }
+  if (info.last_hwid_check) add('last_hwid_check', info.last_hwid_check);
+  return parts.join(' | ');
+}
+
+function buildEventTooltip(event) {
+  if (!event) {
+    return '';
+  }
+  const parts = [];
+  const type = String(event.event_type || '');
+  const detail = event.detail || event.event_detail || '';
+  const ip = event.ip || event.ip_address || '';
+  const hwid = event.hwid_hash || '';
+  const keyId = event.key_id || '';
+  if (type) parts.push(`type=${type}`);
+  if (detail) parts.push(`detail=${detail}`);
+  if (keyId) parts.push(`key_id=${keyId}`);
+  if (hwid) parts.push(`hwid=${hwid}`);
+  if (ip) parts.push(`ip=${ip}`);
+  return parts.join(' | ');
 }
 
 function showView(view) {
@@ -187,21 +314,27 @@ async function loadDevices(key) {
   devicesEl.classList.remove('empty');
   devicesEl.innerHTML = data.devices
     .map((d) => {
-      let info = '';
-      if (d.device_info) {
-        try {
-          const parsed = JSON.parse(d.device_info);
-          const deviceLine = [parsed.name, parsed.os, parsed.build].filter(Boolean).join(' - ');
-          info = `<div>Device: ${escapeHtml(deviceLine)}</div>` +
-                 `<div>CPU: ${escapeHtml(parsed.cpu || '-')} | GPU: ${escapeHtml(parsed.gpu || '-')}</div>`;
-        } catch (_) {
-          info = `<div>Device info: ${escapeHtml(d.device_info)}</div>`;
-        }
-      }
-      return `<div><strong>${escapeHtml(d.hwid_hash)}</strong></div>` +
-        `<div>First: ${escapeHtml(d.first_seen_at)} | Last: ${escapeHtml(d.last_seen_at)} | Inject: ${escapeHtml(d.last_inject_at || '-')}</div>` +
-        `<div>Revoked: ${d.is_revoked ? 'Yes' : 'No'}</div>` +
-        info;
+      const info = parseDeviceInfo(d.device_info);
+      const summary = buildDeviceSummary(info);
+      const tooltip = buildDeviceTooltip(info);
+      const scoreLine = Number(info.hwid_score)
+        ? `<div class="device-meta">HWID score: ${escapeHtml(info.hwid_score)}</div>`
+        : '';
+      const flagsLine =
+        Array.isArray(info.hwid_flags) && info.hwid_flags.length
+          ? `<div class="device-meta">HWID flags: ${escapeHtml(info.hwid_flags.join(', '))}</div>`
+          : '';
+      const titleAttr = tooltip ? ` title="${escapeAttr(tooltip)}"` : '';
+      return `
+        <div class="device-card"${titleAttr}>
+          <div class="device-title">${escapeHtml(d.hwid_hash)}</div>
+          <div class="device-meta">First: ${escapeHtml(d.first_seen_at)} | Last: ${escapeHtml(d.last_seen_at)} | Inject: ${escapeHtml(d.last_inject_at || '-')}</div>
+          <div class="device-meta">Revoked: ${d.is_revoked ? 'Yes' : 'No'}</div>
+          ${scoreLine}
+          ${flagsLine}
+          ${summary}
+        </div>
+      `;
     })
     .join('<hr class="divider" />');
 }
@@ -224,9 +357,19 @@ async function loadEvents(key) {
   eventsEl.classList.remove('empty');
   eventsEl.innerHTML = filtered
     .map(
-      (e) =>
-        `<div><strong>${escapeHtml(e.event_type)}</strong> - ${escapeHtml(e.created_at)}</div>` +
-        `<div>IP: ${escapeHtml(e.ip || '-')} | ${escapeHtml(e.detail || '')}</div>`
+      (e) => {
+        const detail = e.detail || e.event_detail || '';
+        const detailShort = detail ? truncateText(detail, 80) : '-';
+        const tooltip = buildEventTooltip(e);
+        const titleAttr = tooltip ? ` title="${escapeAttr(tooltip)}"` : '';
+        const ip = e.ip || e.ip_address || '-';
+        return `
+          <div class="event-row"${titleAttr}>
+            <div><span class="badge">${escapeHtml(e.event_type || '-')}</span> ${escapeHtml(e.created_at)}</div>
+            <div class="event-meta">IP: ${escapeHtml(ip)} | ${escapeHtml(detailShort)}</div>
+          </div>
+        `;
+      }
     )
     .join('<hr class="divider" />');
 }
