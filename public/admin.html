@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>u3ware Admin Panel</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            padding: 20px 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            color: #667eea;
+            font-size: 24px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.3s;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+        }
+
+        .btn-danger {
+            background: #f56565;
+            color: white;
+        }
+
+        .btn-success {
+            background: #48bb78;
+            color: white;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .tab {
+            background: rgba(255, 255, 255, 0.9);
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+
+        .tab:hover {
+            background: white;
+        }
+
+        .tab.active {
+            background: white;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th {
+            background: #f7fafc;
+            padding: 12px;
+            text-align: left;
+            font-weight: 600;
+            color: #2d3748;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+
+        tr:hover {
+            background: #f7fafc;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .badge-success {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .badge-danger {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .badge-warning {
+            background: #feebc8;
+            color: #744210;
+        }
+
+        .badge-info {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 20px 25px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-header {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+            color: #2d3748;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 500;
+            color: #4a5568;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .stat-value {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .login-container {
+            max-width: 400px;
+            margin: 100px auto;
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+        }
+
+        .login-header {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .login-header h2 {
+            color: #667eea;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        .login-header p {
+            color: #718096;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .actions {
+            display: flex;
+            gap: 5px;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        .search-box {
+            margin-bottom: 20px;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+
+        .hwid-flags {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+
+        .score-badge {
+            font-weight: 700;
+            padding: 6px 12px;
+            border-radius: 8px;
+        }
+
+        .score-low {
+            background: #c6f6d5;
+            color: #22543d;
+        }
+
+        .score-medium {
+            background: #feebc8;
+            color: #744210;
+        }
+
+        .score-high {
+            background: #fed7d7;
+            color: #742a2a;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #718096;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #718096;
+        }
+
+        .empty-state svg {
+            width: 80px;
+            height: 80px;
+            margin-bottom: 20px;
+            opacity: 0.3;
+        }
+
+        pre {
+            background: #f7fafc;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 12px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="loginScreen">
+        <div class="login-container">
+            <div class="login-header">
+                <h2>🔐 u3ware Admin</h2>
+                <p>Введите токен для доступа</p>
+            </div>
+            <div class="form-group">
+                <label>Admin Token</label>
+                <input type="password" id="adminToken" placeholder="Введите токен...">
+            </div>
+            <button class="btn btn-primary" style="width: 100%;" onclick="login()">Войти</button>
+        </div>
+    </div>
+
+    <!-- Main Panel -->
+    <div id="mainPanel" class="hidden">
+        <div class="container">
+            <div class="header">
+                <h1>🛡️ u3ware Admin Panel</h1>
+                <div class="header-actions">
+                    <button class="btn btn-primary" onclick="showCreateKeyModal()">➕ Создать ключ</button>
+                    <button class="btn btn-danger" onclick="logout()">Выход</button>
+                </div>
+            </div>
+
+            <div class="tabs">
+                <div class="tab active" onclick="switchTab('dashboard')">📊 Дашборд</div>
+                <div class="tab" onclick="switchTab('keys')">🔑 Ключи</div>
+                <div class="tab" onclick="switchTab('devices')">💻 Устройства</div>
+                <div class="tab" onclick="switchTab('events')">📝 Логи</div>
+            </div>
+
+            <div class="content">
+                <!-- Dashboard Tab -->
+                <div id="dashboard-tab" class="tab-content active">
+                    <div class="stats" id="stats">
+                        <div class="stat-card">
+                            <div class="stat-value" id="totalKeys">-</div>
+                            <div class="stat-label">Всего ключей</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="activeKeys">-</div>
+                            <div class="stat-label">Активных ключей</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="totalDevices">-</div>
+                            <div class="stat-label">Устройств</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="suspiciousDevices">-</div>
+                            <div class="stat-label">Подозрительных HWID</div>
+                        </div>
+                    </div>
+                    <h3>Последние события</h3>
+                    <div id="recentEvents"></div>
+                </div>
+
+                <!-- Keys Tab -->
+                <div id="keys-tab" class="tab-content">
+                    <div class="search-box">
+                        <input type="text" id="keysSearch" placeholder="Search by key/hash (Enter for exact lookup)" onkeyup="filterKeys(event)">
+                    </div>
+                    <div id="keysList"></div>
+                </div>
+
+                <!-- Devices Tab -->
+                <div id="devices-tab" class="tab-content">
+                    <div class="search-box">
+                        <input type="text" id="devicesSearch" placeholder="🔍 Поиск по HWID..." onkeyup="filterDevices()">
+                    </div>
+                    <div id="devicesList"></div>
+                </div>
+
+                <!-- Events Tab -->
+                <div id="events-tab" class="tab-content">
+                    <div class="search-box">
+                        <input type="text" id="eventsSearch" placeholder="🔍 Поиск..." onkeyup="filterEvents()">
+                    </div>
+                    <div id="eventsList"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Key Modal -->
+    <div id="createKeyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">Создать новый ключ</div>
+            <div class="form-group">
+                <label>Количество дней</label>
+                <input type="number" id="keyDays" value="30" min="1">
+            </div>
+            <div class="form-group">
+                <label>Продукт</label>
+                <select id="keyProduct">
+                    <option value="blitz">Blitz</option>
+                    <option value="blitzbeta">Blitz Beta</option>
+                    <option value="blitzdev">Blitz Dev</option>
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal()">Отмена</button>
+                <button class="btn btn-primary" onclick="createKey()">Создать</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="admin.js"></script>
+</body>
+</html>
+
+
