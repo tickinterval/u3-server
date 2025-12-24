@@ -82,8 +82,37 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now u3-server
 ```
 
-3) Put it behind a reverse proxy (nginx or caddy) for TLS.
-4) Update the loader certificate thumbprint if the TLS cert changes.
+3) Put it behind a reverse proxy (nginx) for TLS.
+
+### Nginx example (TLS reverse proxy)
+```
+server {
+    listen 80;
+    server_name example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+If you use a new TLS certificate, update the loader certificate thumbprint.
 
 ## Admin client (optional)
 The admin client is included in `admin-client/` and binds to `127.0.0.1` only.
@@ -103,3 +132,11 @@ Open `http://127.0.0.1:5175` locally.
 ## Files to upload from the build machine
 - `data/payload.dll` (or per-product DLLs)
 - `data/loader.exe` (for updates)
+
+## Release checklist (VPS)
+1) Pull latest changes and update `config.json` if needed.
+2) Backup `data/keys.db`.
+3) Upload new `data/loader.exe` and payload DLLs.
+4) Update `update_version`, `update_url`, `min_loader_version`, and `products[].updated_at` in `config.json`.
+5) Run `npm install` if dependencies changed.
+6) Restart service: `sudo systemctl restart u3-server`.
