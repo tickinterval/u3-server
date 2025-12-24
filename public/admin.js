@@ -50,6 +50,27 @@ function escapeHtml(value) {
         .replace(/'/g, '&#39;');
 }
 
+function escapeAttr(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/'/g, '&#39;')
+        .replace(/\r?\n/g, ' ');
+}
+
+function truncateText(value, maxLen) {
+    const text = String(value ?? '');
+    if (text.length <= maxLen) {
+        return text;
+    }
+    if (maxLen <= 3) {
+        return text.slice(0, maxLen);
+    }
+    return text.slice(0, maxLen - 3) + '...';
+}
+
 // API Request wrapper
 async function apiRequest(endpoint, options = {}) {
     if (!adminToken) {
@@ -97,7 +118,7 @@ async function loadDashboard() {
         const [keys, devices, events] = await Promise.all([
             fetchKeys(),
             fetchDevices(),
-            fetchEvents()
+            fetchEvents(1000)
         ]);
         
         // Calculate stats
@@ -105,12 +126,8 @@ async function loadDashboard() {
             (!k.expires_at || new Date(k.expires_at) > new Date())).length;
         
         const suspiciousDevices = devices.filter(d => {
-            try {
-                const info = JSON.parse(d.device_info || '{}');
-                return info.hwid_score >= 50;
-            } catch {
-                return false;
-            }
+            const info = parseDeviceInfo(d.device_info);
+            return Number(info.hwid_score) >= 50;
         }).length;
         
         document.getElementById('totalKeys').textContent = keys.length;
@@ -141,13 +158,15 @@ function renderRecentEvents(events) {
                 ${events.map(e => {
                     const type = String(e.event_type || '');
                     const ip = e.ip_address ?? e.ip ?? '-';
-                    const detail = e.event_detail ?? e.detail ?? '-';
+                    const detail = e.event_detail ?? e.detail ?? '';
+                    const detailShort = detail ? truncateText(detail, 60) : '-';
+                    const tooltip = buildEventTooltip(e);
                     return `
                     <tr>
                         <td>${escapeHtml(formatDate(e.created_at))}</td>
-                        <td><span class="badge ${getEventBadge(type)}">${escapeHtml(type)}</span></td>
+                        <td><span class="badge ${getEventBadge(type)}" title="${escapeAttr(tooltip)}">${escapeHtml(type)}</span></td>
                         <td>${escapeHtml(ip)}</td>
-                        <td>${escapeHtml(detail)}</td>
+                        <td title="${escapeAttr(detail || '')}">${escapeHtml(detailShort)}</td>
                     </tr>
                     `;
                 }).join('')}
@@ -243,6 +262,7 @@ function renderDevices(devices) {
                     <th>HWID Hash</th>
                     <th>Key ID</th>
                     <th>HWID Score</th>
+                    <th>Device</th>
                     <th>Флаги</th>
                     <th>Первый вход</th>
                     <th>Последний вход</th>
@@ -252,11 +272,14 @@ function renderDevices(devices) {
             <tbody>
                 ${devices.map(d => {
                     const info = parseDeviceInfo(d.device_info);
+                    const deviceSummary = buildDeviceSummary(info);
+                    const deviceTooltip = buildDeviceTooltip(info);
                     return `
                         <tr>
                             <td><code>${escapeHtml(d.hwid_hash.substring(0, 16) + '...')}</code></td>
                             <td>${escapeHtml(d.key_id)}</td>
                             <td>${getScoreBadge(info.hwid_score)}</td>
+                            <td title="${escapeAttr(deviceTooltip)}">${deviceSummary}</td>
                             <td>
                                 <div class="hwid-flags">
                                     ${(info.hwid_flags || []).map(f => `<span class="badge badge-warning">${escapeHtml(f)}</span>`).join('')}
@@ -284,7 +307,7 @@ function renderDevices(devices) {
 // Load Events
 async function loadEvents() {
     try {
-        const events = await fetchEvents();
+        const events = await fetchEvents(1000);
         renderEvents(events);
     } catch (err) {
         console.error('Failed to load events:', err);
@@ -319,15 +342,17 @@ function renderEvents(events) {
                 ${events.map(e => {
                     const type = String(e.event_type || '');
                     const ip = e.ip_address ?? e.ip ?? '-';
-                    const detail = e.event_detail ?? e.detail ?? '-';
+                    const detail = e.event_detail ?? e.detail ?? '';
+                    const detailShort = detail ? truncateText(detail, 80) : '-';
+                    const tooltip = buildEventTooltip(e);
                     return `
                     <tr>
                         <td>${escapeHtml(formatDate(e.created_at))}</td>
-                        <td><span class="badge ${getEventBadge(type)}">${escapeHtml(type)}</span></td>
+                        <td><span class="badge ${getEventBadge(type)}" title="${escapeAttr(tooltip)}">${escapeHtml(type)}</span></td>
                         <td>${escapeHtml(e.key_id || '-')}</td>
                         <td>${escapeHtml(e.hwid_hash ? e.hwid_hash.substring(0, 12) + '...' : '-')}</td>
                         <td>${escapeHtml(ip)}</td>
-                        <td>${escapeHtml(detail)}</td>
+                        <td title="${escapeAttr(detail || '')}">${escapeHtml(detailShort)}</td>
                     </tr>
                     `;
                 }).join('')}
@@ -348,8 +373,9 @@ async function fetchDevices() {
     return allDevices;
 }
 
-async function fetchEvents() {
-    allEvents = await apiRequest('/admin/events');
+async function fetchEvents(limit = 1000, offset = 0) {
+    const query = `?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`;
+    allEvents = await apiRequest(`/admin/events${query}`);
     return allEvents;
 }
 
@@ -522,9 +548,11 @@ function filterDevices() {
 function filterEvents() {
     const search = document.getElementById('eventsSearch').value.toLowerCase();
     const filtered = allEvents.filter(e =>
-        e.event_type.toLowerCase().includes(search) ||
-        (e.event_detail || '').toLowerCase().includes(search) ||
-        (e.ip_address || '').toLowerCase().includes(search)
+        String(e.event_type || '').toLowerCase().includes(search) ||
+        String(e.event_detail || e.detail || '').toLowerCase().includes(search) ||
+        String(e.ip_address || e.ip || '').toLowerCase().includes(search) ||
+        String(e.key_id || '').toLowerCase().includes(search) ||
+        String(e.hwid_hash || '').toLowerCase().includes(search)
     );
     renderEvents(filtered);
 }
@@ -574,9 +602,109 @@ function getEventBadge(type) {
     return 'badge-info';
 }
 
-function parseDeviceInfo(json) {
+function formatDeviceNumber(value, unit) {
+    const num = Number(value);
+    if (!Number.isFinite(num) || num <= 0) {
+        return '';
+    }
+    const fixed = num.toFixed(1);
+    const text = fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed;
+    return unit ? `${text} ${unit}` : text;
+}
+
+function buildDeviceSummary(info) {
+    if (!info || typeof info !== 'object') {
+        return '-';
+    }
+    const lines = [];
+    const nameLine = [info.name, info.os, info.build].filter(Boolean).join(' | ');
+    const hwLine = [info.cpu, info.gpu].filter(Boolean).join(' | ');
+    const specParts = [];
+    if (info.arch) specParts.push(String(info.arch));
+    if (info.cores) specParts.push(`${info.cores} cores`);
+    const ram = formatDeviceNumber(info.ram_gb, 'GB RAM');
+    if (ram) specParts.push(ram);
+    const disk = formatDeviceNumber(info.disk_gb, 'GB disk');
+    if (disk) specParts.push(disk);
+    const specLine = specParts.join(' | ');
+    const localeLine = [info.locale, info.timezone].filter(Boolean).join(' | ');
+
+    if (nameLine) lines.push(`<div class="device-title">${escapeHtml(nameLine)}</div>`);
+    if (hwLine) lines.push(`<div class="device-meta">${escapeHtml(hwLine)}</div>`);
+    if (specLine) lines.push(`<div class="device-meta">${escapeHtml(specLine)}</div>`);
+    if (localeLine) lines.push(`<div class="device-meta">${escapeHtml(localeLine)}</div>`);
+
+    if (!lines.length) {
+        return '-';
+    }
+    return `<div class="device-stack">${lines.join('')}</div>`;
+}
+
+function buildDeviceTooltip(info) {
+    if (!info || typeof info !== 'object') {
+        return '';
+    }
+    const parts = [];
+    const add = (label, value) => {
+        if (value) {
+            parts.push(`${label}=${value}`);
+        }
+    };
+    add('name', info.name);
+    add('os', info.os);
+    add('build', info.build);
+    add('arch', info.arch);
+    add('cpu', info.cpu);
+    add('gpu', info.gpu);
+    if (info.cores) add('cores', info.cores);
+    const ram = formatDeviceNumber(info.ram_gb, 'GB');
+    if (ram) add('ram', ram);
+    const disk = formatDeviceNumber(info.disk_gb, 'GB');
+    if (disk) add('disk', disk);
+    add('locale', info.locale);
+    add('timezone', info.timezone);
+    add('bios', info.bios);
+    add('board', info.board);
+    add('smbios', info.smbios);
+    if (info.hwid_score) add('hwid_score', info.hwid_score);
+    if (Array.isArray(info.hwid_flags) && info.hwid_flags.length) {
+        add('hwid_flags', info.hwid_flags.join(','));
+    }
+    if (info.last_hwid_check) add('last_hwid_check', info.last_hwid_check);
+    return parts.join(' | ');
+}
+
+function buildEventTooltip(event) {
+    if (!event) {
+        return '';
+    }
+    const parts = [];
+    const type = String(event.event_type || '');
+    const detail = event.event_detail ?? event.detail ?? '';
+    const keyId = event.key_id ? `key_id=${event.key_id}` : '';
+    const hwid = event.hwid_hash ? `hwid=${event.hwid_hash}` : '';
+    const ip = event.ip_address ?? event.ip ?? '';
+    if (type) parts.push(`type=${type}`);
+    if (detail) parts.push(`detail=${detail}`);
+    if (keyId) parts.push(keyId);
+    if (hwid) parts.push(hwid);
+    if (ip) parts.push(`ip=${ip}`);
+    return parts.join(' | ');
+}
+
+function parseDeviceInfo(value) {
+    if (!value) {
+        return {};
+    }
+    if (typeof value === 'object') {
+        return value;
+    }
     try {
-        return JSON.parse(json || '{}');
+        const parsed = JSON.parse(value);
+        if (typeof parsed === 'string') {
+            return JSON.parse(parsed);
+        }
+        return parsed || {};
     } catch {
         return {};
     }

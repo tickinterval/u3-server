@@ -418,7 +418,7 @@ function compareVersions(left, right) {
 }
 
 function collectDeviceInfo(body) {
-  if (body && body.device_info && typeof body.device_info === 'object') {
+  if (body && body.device_info && typeof body.device_info === 'object' && !Array.isArray(body.device_info)) {
     return body.device_info;
   }
   return {
@@ -427,24 +427,75 @@ function collectDeviceInfo(body) {
     build: (body && body.device_build) || '',
     os: (body && body.device_os) || '',
     name: (body && body.device_name) || '',
+    arch: (body && body.device_arch) || '',
+    cores: body && body.device_cores,
+    ram_gb: body && body.device_ram_gb,
+    disk_gb: body && body.device_disk_gb,
+    locale: (body && body.device_locale) || '',
+    timezone: (body && body.device_timezone) || '',
+    bios: (body && body.device_bios) || '',
+    board: (body && body.device_board) || '',
+    smbios: (body && body.device_smbios) || '',
+    hwid_score: body && body.hwid_score,
+    hwid_flags: body && body.hwid_flags,
   };
 }
 
 function normalizeDeviceInfo(info) {
   if (!info || typeof info !== 'object') {
-    return '';
+    return null;
   }
-  const cleaned = {
-    cpu: String(info.cpu || ''),
-    gpu: String(info.gpu || ''),
-    build: String(info.build || ''),
-    os: String(info.os || ''),
-    name: String(info.name || ''),
+  const cleaned = {};
+  const setText = (key, value, maxLen) => {
+    const text = sanitizeLogField(value, maxLen);
+    if (text) {
+      cleaned[key] = text;
+    }
   };
-  if (!cleaned.cpu && !cleaned.gpu && !cleaned.build && !cleaned.os && !cleaned.name) {
-    return '';
+  const setNumber = (key, value, min, max) => {
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      return;
+    }
+    let out = num;
+    if (Number.isFinite(min)) out = Math.max(min, out);
+    if (Number.isFinite(max)) out = Math.min(max, out);
+    cleaned[key] = out;
+  };
+  const setFlags = (key, value) => {
+    if (!Array.isArray(value)) {
+      return;
+    }
+    const flags = value
+      .map((entry) => sanitizeLogField(entry, 64))
+      .filter(Boolean)
+      .slice(0, 12);
+    if (flags.length > 0) {
+      cleaned[key] = flags;
+    }
+  };
+
+  setText('cpu', info.cpu, 200);
+  setText('gpu', info.gpu, 200);
+  setText('build', info.build, 120);
+  setText('os', info.os, 120);
+  setText('name', info.name, 120);
+  setText('arch', info.arch, 32);
+  setNumber('cores', info.cores, 1, 512);
+  setNumber('ram_gb', info.ram_gb, 0, 4096);
+  setNumber('disk_gb', info.disk_gb, 0, 32768);
+  setText('locale', info.locale, 32);
+  setText('timezone', info.timezone, 64);
+  setText('bios', info.bios, 128);
+  setText('board', info.board, 128);
+  setText('smbios', info.smbios, 128);
+  setNumber('hwid_score', info.hwid_score, 0, 1000);
+  setFlags('hwid_flags', info.hwid_flags);
+  if (info.last_hwid_check) {
+    setText('last_hwid_check', info.last_hwid_check, 64);
   }
-  return JSON.stringify(cleaned);
+
+  return Object.keys(cleaned).length > 0 ? cleaned : null;
 }
 
 function escapeSigField(value) {
@@ -665,12 +716,6 @@ function verifyUpdateToken(token) {
   if (!payload.exp || Date.now() > payload.exp) {
     return null;
   }
-  if (!payload.key_hash || !payload.hwid_hash) {
-    return null;
-  }
-  if (downloadTokenRequireId && !payload.jti) {
-    return null;
-  }
   return payload;
 }
 
@@ -769,7 +814,7 @@ app.post('/validate', (req, res) => {
   }
   const keyHash = row.key_hash || hashKey(normalizedKey);
   const hwidHash = hashHwid(hwid.trim());
-  const eventTokenTtl = Number(config.event_token_ttl_seconds || 300);
+  const eventTokenTtl = Number(config.event_token_ttl_seconds || 3600);
   const eventToken = makeUpdateToken({
     key_hash: keyHash,
     hwid_hash: hwidHash,
@@ -1302,10 +1347,22 @@ app.post('/admin/device/allow', requireAdmin, (req, res) => {
 });
 
 app.get('/admin/events', requireAdmin, (req, res) => {
-  const limit = Math.min(Number(req.query && req.query.limit) || 100, 500);
+  const limit = Math.min(Number(req.query && req.query.limit) || 500, 1000);
+  const offset = Math.max(Number(req.query && req.query.offset) || 0, 0);
+  const key = (req.query && req.query.key) || '';
+  if (key) {
+    const keyRow = findKeyRow(key);
+    if (!keyRow) {
+      return res.json([]);
+    }
+    const events = db.prepare(
+      'SELECT * FROM license_events WHERE key_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
+    ).all(keyRow.id, limit, offset);
+    return res.json(events);
+  }
   const events = db.prepare(
-    'SELECT * FROM license_events ORDER BY created_at DESC LIMIT ?'
-  ).all(limit);
+    'SELECT * FROM license_events ORDER BY created_at DESC LIMIT ? OFFSET ?'
+  ).all(limit, offset);
   return res.json(events);
 });
 
@@ -1345,10 +1402,11 @@ app.post('/event', (req, res) => {
   }
 
   const deviceInfo = normalizeDeviceInfo(collectDeviceInfo(req.body));
+  const deviceInfoJson = deviceInfo && Object.keys(deviceInfo).length > 0 ? JSON.stringify(deviceInfo) : null;
   if (eventType === 'inject_ok') {
     db.prepare(
       'UPDATE license_devices SET last_inject_at = ?, device_info = COALESCE(?, device_info) WHERE id = ?'
-    ).run(nowIso(), deviceInfo || null, deviceRow.id);
+    ).run(nowIso(), deviceInfoJson, deviceRow.id);
   }
   const fullDetail = [detail, productCode ? `product=${productCode}` : ''].filter(Boolean).join(' | ');
   logEvent(eventType, row.id, hwidHash, req.ip, fullDetail || null);
