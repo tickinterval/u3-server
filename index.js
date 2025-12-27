@@ -197,6 +197,8 @@ const WATERMARK_MAGIC = 'U3WM1';
 const WATERMARK_VERSION = 1;
 const PAYLOAD_MAGIC = 'U3E1';
 const PAYLOAD_VERSION = 1;
+const PROTECTION_MAGIC = 'U3PR1';
+const PROTECTION_VERSION = 1;
 
 const payloadCache = new Map();
 
@@ -1139,6 +1141,324 @@ app.get('/download', (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Length', payloadBuffer.length);
   return res.send(payloadBuffer);
+});
+
+// Структура защиты для встраивания в DLL
+function buildProtectionOverlay(processInfo) {
+  if (!processInfo || typeof processInfo !== 'object') {
+    console.error('[buildProtectionOverlay] Invalid processInfo:', typeof processInfo, processInfo);
+    return null;
+  }
+  
+  // Ограничиваем количество модулей и функций, чтобы не превысить лимит
+  const maxModules = 50;
+  const maxFunctions = 20;
+  
+  const protection = {
+    cpuid: Number(processInfo.cpuid) || 0,
+    timestamp: Number(processInfo.timestamp) || Date.now(),
+    process_id: Number(processInfo.process_id) || 0,
+    modules: (Array.isArray(processInfo.modules) ? processInfo.modules : [])
+      .slice(0, maxModules)
+      .map(mod => ({
+        name: String(mod.name || '').substring(0, 128),
+        base_address: String(mod.base_address || '0x0').substring(0, 32),
+        size: Number(mod.size || 0),
+      })),
+    functions: (Array.isArray(processInfo.functions) ? processInfo.functions : [])
+      .slice(0, maxFunctions)
+      .map(func => ({
+        module: String(func.module || '').substring(0, 64),
+        function: String(func.function || '').substring(0, 64),
+        address: String(func.address || '0x0').substring(0, 32),
+      })),
+  };
+  
+  const json = JSON.stringify(protection);
+  const data = Buffer.from(json, 'utf8');
+  
+  if (data.length > 4096) {
+    console.error('[buildProtectionOverlay] Data too large:', data.length, 'bytes');
+    // Пытаемся уменьшить размер, убрав часть данных
+    protection.modules = protection.modules.slice(0, Math.floor(protection.modules.length / 2));
+    protection.functions = protection.functions.slice(0, Math.floor(protection.functions.length / 2));
+    const json2 = JSON.stringify(protection);
+    const data2 = Buffer.from(json2, 'utf8');
+    if (data2.length > 4096) {
+      console.error('[buildProtectionOverlay] Still too large after reduction:', data2.length, 'bytes');
+      return null;
+    }
+    const header = Buffer.alloc(10);
+    header.write(PROTECTION_MAGIC, 0, 'ascii');
+    header.writeUInt8(PROTECTION_VERSION, 5);
+    header.writeUInt32LE(data2.length, 6);
+    return Buffer.concat([header, data2]);
+  }
+  
+  // Формат: MAGIC (5 байт) + VERSION (1 байт) + LENGTH (4 байта LE) + DATA
+  const header = Buffer.alloc(10);
+  header.write(PROTECTION_MAGIC, 0, 'ascii');
+  header.writeUInt8(PROTECTION_VERSION, 5);
+  header.writeUInt32LE(data.length, 6);
+  
+  return Buffer.concat([header, data]);
+}
+
+// Генерация защищённой DLL с overlay
+function buildProtectedPayload(payloadPath, protectionOverlay, watermarkOverlay) {
+  const buffer = getPayloadBuffer(payloadPath);
+  if (!buffer) {
+    return null;
+  }
+  
+  const overlays = [];
+  if (watermarkOverlay) {
+    overlays.push(watermarkOverlay);
+  }
+  if (protectionOverlay) {
+    overlays.push(protectionOverlay);
+  }
+  
+  if (overlays.length === 0) {
+    return buffer;
+  }
+  
+  return Buffer.concat([buffer, ...overlays]);
+}
+
+// Кэш для уникальных DLL (временное хранилище)
+const protectedDllCache = new Map();
+const PROTECTED_DLL_TTL_MS = 5 * 60 * 1000; // 5 минут
+
+function cleanupProtectedDllCache() {
+  const now = Date.now();
+  for (const [key, entry] of protectedDllCache.entries()) {
+    if (now - entry.timestamp > PROTECTED_DLL_TTL_MS) {
+      protectedDllCache.delete(key);
+    }
+  }
+}
+
+// Endpoint для запроса защищённой DLL
+app.post('/request-dll', (req, res) => {
+  const token = (req.body && req.body.token) || '';
+  const productCode = sanitizeLogField((req.body && req.body.product_code) || '', 64);
+  const processInfo = req.body && req.body.process_info;
+  const requestIp = getRequestIp(req);
+  const requestUa = getRequestUserAgent(req);
+  
+  // Логируем входящий запрос для отладки
+  console.log('[request-dll] Received request:', {
+    hasToken: !!token,
+    tokenLength: token.length,
+    productCode,
+    hasProcessInfo: !!processInfo,
+    processInfoType: typeof processInfo,
+    processInfoKeys: processInfo ? Object.keys(processInfo) : [],
+  });
+  
+  if (!token) {
+    console.error('[request-dll] Missing token');
+    return res.status(400).json({ ok: false, error: 'missing_token' });
+  }
+  
+  // Обрабатываем случай, когда process_info может быть строкой (если Express не распарсил)
+  let parsedProcessInfo = processInfo;
+  if (typeof processInfo === 'string') {
+    try {
+      parsedProcessInfo = JSON.parse(processInfo);
+    } catch (err) {
+      console.error('[request-dll] Failed to parse processInfo string:', err);
+      return res.status(400).json({ ok: false, error: 'invalid_process_info_format' });
+    }
+  }
+  
+  if (!parsedProcessInfo || typeof parsedProcessInfo !== 'object' || Array.isArray(parsedProcessInfo)) {
+    console.error('[request-dll] Missing or invalid processInfo:', typeof parsedProcessInfo, parsedProcessInfo);
+    return res.status(400).json({ ok: false, error: 'missing_process_info' });
+  }
+  
+  // Проверяем event token
+  const tokenPayload = verifyUpdateToken(token);
+  if (!tokenPayload) {
+    logEvent('request_dll_invalid', null, null, requestIp, 'invalid_token');
+    return res.status(403).json({ ok: false, error: 'invalid_token' });
+  }
+  
+  const keyHash = tokenPayload.key_hash;
+  const hwidHash = tokenPayload.hwid_hash;
+  
+  // Проверяем ключ
+  const row = db.prepare('SELECT * FROM license_keys WHERE key_hash = ?').get(keyHash);
+  if (!row || row.is_revoked) {
+    logEvent('request_dll_invalid', row ? row.id : null, hwidHash, requestIp, 'invalid_key');
+    return res.status(403).json({ ok: false, error: 'invalid_key' });
+  }
+  
+  // Проверяем устройство
+  const deviceRow = db.prepare(
+    'SELECT id FROM license_devices WHERE key_id = ? AND hwid_hash = ? AND is_revoked = 0'
+  ).get(row.id, hwidHash);
+  if (!deviceRow) {
+    logEvent('request_dll_hwid_mismatch', row.id, hwidHash, requestIp, 'device_not_registered');
+    return res.status(403).json({ ok: false, error: 'hwid_mismatch' });
+  }
+  
+  // Определяем путь к payload
+  let payloadPath = config.payloadPath;
+  if (productCode) {
+    const productRow = db.prepare(
+      'SELECT * FROM license_products WHERE key_id = ? AND product_code = ?'
+    ).get(row.id, productCode);
+    if (!productRow) {
+      logEvent('request_dll_invalid', row.id, hwidHash, requestIp, 'invalid_product');
+      return res.status(403).json({ ok: false, error: 'invalid_product' });
+    }
+    const expiresAt = productRow.expires_at ? new Date(productRow.expires_at) : null;
+    if (expiresAt && Date.now() > expiresAt.getTime()) {
+      logEvent('request_dll_expired', row.id, hwidHash, requestIp, 'expired_product');
+      return res.status(403).json({ ok: false, error: 'expired' });
+    }
+    const productConfig = productMap.get(productCode);
+    if (productConfig) {
+      payloadPath = productConfig.payload_path;
+    }
+  } else {
+    const expiresAt = row.expires_at ? new Date(row.expires_at) : null;
+    if (expiresAt && Date.now() > expiresAt.getTime()) {
+      logEvent('request_dll_expired', row.id, hwidHash, requestIp, 'expired_key');
+      return res.status(403).json({ ok: false, error: 'expired' });
+    }
+  }
+  
+  const resolvedPath = path.resolve(__dirname, payloadPath || './data/payload.dll');
+  if (!fs.existsSync(resolvedPath)) {
+    logEvent('request_dll_missing', row.id, hwidHash, requestIp, 'missing_payload');
+    return res.status(404).json({ ok: false, error: 'missing_payload' });
+  }
+  
+  // Генерируем уникальный ключ для кэша
+  const cacheKey = crypto.createHash('sha256')
+    .update(keyHash)
+    .update(hwidHash)
+    .update(productCode || 'default')
+    .update(JSON.stringify(processInfo))
+    .update(String(Date.now())) // Уникальность для каждого запроса
+    .digest('hex')
+    .slice(0, 32);
+  
+  // Очищаем старые записи
+  cleanupProtectedDllCache();
+  
+  // Генерируем overlay с защитой
+  const protectionOverlay = buildProtectionOverlay(parsedProcessInfo);
+  if (!protectionOverlay) {
+    console.error('[request-dll] Failed to build protection overlay for key:', keyHash, 'hwid:', hwidHash);
+    logEvent('request_dll_fail', row.id, hwidHash, requestIp, 'protection_overlay_failed');
+    return res.status(500).json({ ok: false, error: 'protection_failed' });
+  }
+  
+  // Генерируем watermark overlay
+  const watermarkId = buildWatermarkId({
+    keyHash,
+    hwidHash,
+    productCode: productCode || 'default',
+  });
+  const tokenId = crypto.randomBytes(16).toString('hex');
+  const watermarkOverlay = buildWatermarkOverlay({
+    watermark: watermarkId,
+    productCode: productCode || 'default',
+    tokenId,
+  });
+  
+  // Собираем защищённую DLL
+  const protectedBuffer = buildProtectedPayload(resolvedPath, protectionOverlay, watermarkOverlay);
+  if (!protectedBuffer) {
+    logEvent('request_dll_fail', row.id, hwidHash, requestIp, 'build_failed');
+    return res.status(500).json({ ok: false, error: 'build_failed' });
+  }
+  
+  // Сохраняем в кэш
+  protectedDllCache.set(cacheKey, {
+    buffer: protectedBuffer,
+    timestamp: Date.now(),
+    keyHash,
+    hwidHash,
+  });
+  
+  // Вычисляем hash
+  const dllHash = crypto.createHash('sha256').update(protectedBuffer).digest('hex');
+  
+  // Генерируем токен для скачивания
+  const downloadTokenTtl = getDownloadTokenTtlSeconds();
+  const downloadTokenPayload = {
+    key_hash: keyHash,
+    hwid_hash: hwidHash,
+    exp: Date.now() + downloadTokenTtl * 1000,
+    jti: tokenId,
+    cache_key: cacheKey, // Уникальный ключ для кэша
+  };
+  if (productCode) {
+    downloadTokenPayload.product_code = productCode;
+  }
+  const downloadToken = makeDownloadToken(downloadTokenPayload);
+  
+  // Сохраняем токен в БД
+  try {
+    db.prepare(
+      'INSERT INTO download_tokens (token_id, key_hash, hwid_hash, product_code, issued_at, expires_at, issued_ip, issued_ua) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    ).run(tokenId, keyHash, hwidHash, productCode || null, nowIso(), new Date(Date.now() + downloadTokenTtl * 1000).toISOString(), requestIp || null, requestUa || null);
+  } catch (err) {
+    // Игнорируем ошибки (возможно дубликат)
+  }
+  
+  logEvent('request_dll_ok', row.id, hwidHash, requestIp, productCode || 'default');
+  
+  const dllUrl = `${config.baseUrl.replace(/\/$/, '')}/download-protected?token=${encodeURIComponent(downloadToken)}`;
+  
+  // Возвращаем успешный ответ
+  return res.status(200).json({
+    ok: true,
+    dll_url: dllUrl,
+    dll_sha256: dllHash,
+  });
+});
+
+// Endpoint для скачивания защищённой DLL
+app.get('/download-protected', (req, res) => {
+  const token = req.query.token;
+  const requestIp = getRequestIp(req);
+  const requestUa = getRequestUserAgent(req);
+  const payload = verifyDownloadToken(token);
+  
+  if (!payload || !payload.cache_key) {
+    logEvent('download_protected_invalid', null, null, requestIp, 'invalid_token');
+    return res.status(403).json({ ok: false, error: 'invalid_token' });
+  }
+  
+  // Проверяем кэш
+  const cached = protectedDllCache.get(payload.cache_key);
+  if (!cached) {
+    logEvent('download_protected_expired', null, payload.hwid_hash || null, requestIp, 'cache_expired');
+    return res.status(403).json({ ok: false, error: 'expired' });
+  }
+  
+  // Проверяем соответствие
+  if (cached.keyHash !== payload.key_hash || cached.hwidHash !== payload.hwid_hash) {
+    logEvent('download_protected_mismatch', null, payload.hwid_hash || null, requestIp, 'mismatch');
+    return res.status(403).json({ ok: false, error: 'mismatch' });
+  }
+  
+  // Удаляем из кэша (одноразовое использование)
+  protectedDllCache.delete(payload.cache_key);
+  
+  logEvent('download_protected', null, payload.hwid_hash || null, requestIp, payload.product_code || 'default');
+  
+  res.setHeader('Content-Type', 'application/octet-stream');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Length', cached.buffer.length);
+  return res.send(cached.buffer);
 });
 
 function requireAdmin(req, res, next) {
