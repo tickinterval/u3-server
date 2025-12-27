@@ -187,6 +187,7 @@ const downloadTokenMaxPerHour = Number(config.download_token_max_per_hour || 0);
 const downloadTokenRateLimitMinutes = Number(config.download_token_rate_limit_minutes || 60);
 const downloadTokenCleanupMinutes = Number(config.download_token_cleanup_minutes || 180);
 const downloadTokenDefaultTtlSeconds = Number(config.download_token_ttl_seconds || 300);
+const legacyDownloadEnabled = config.legacy_download_enabled === true;
 const watermarkEnabled = config.watermark_enabled !== false;
 const watermarkMaxBytes = Number(config.watermark_max_bytes || 256);
 const payloadEncryptionEnabled = config.payload_encryption_enabled !== false;
@@ -912,6 +913,10 @@ app.post('/validate', (req, res) => {
   }
 
   if (productRows.length === 0) {
+    if (!legacyDownloadEnabled) {
+      logEvent('download_disabled', row.id, hwidHash, requestIp, 'legacy_disabled');
+      return sendSigned(res.status(403), { ok: false, error: 'no_products' });
+    }
     const tokenInfo = issueDownloadToken({
       keyHash,
       hwidHash,
@@ -964,32 +969,36 @@ app.post('/validate', (req, res) => {
     if (!productConfig) {
       continue;
     }
-    const tokenInfo = issueDownloadToken({
-      keyHash,
-      hwidHash,
-      productCode: productRow.product_code,
-      ip: requestIp,
-      userAgent: requestUa,
-    });
-    if (!tokenInfo) {
-      logEvent('download_token_fail', row.id, hwidHash, requestIp, 'issue_failed');
-      return sendSigned(res.status(500), { ok: false, error: 'download_token_failed' });
-    }
     const watermark = buildWatermarkId({
       keyHash,
       hwidHash,
       productCode: productRow.product_code,
     });
-    const overlay = buildWatermarkOverlay({
-      watermark,
-      productCode: productRow.product_code,
-      tokenId: tokenInfo.tokenId,
-    });
-    let payloadHash = computePayloadHashWithOverlay(productConfig.payload_path, overlay);
-    if (!payloadHash) {
-      payloadHash = productConfig.payload_hash || getPayloadHash(productConfig.payload_path);
+    let dllUrl = '';
+    let payloadHash = productConfig.payload_hash || getPayloadHash(productConfig.payload_path);
+    if (legacyDownloadEnabled) {
+      const tokenInfo = issueDownloadToken({
+        keyHash,
+        hwidHash,
+        productCode: productRow.product_code,
+        ip: requestIp,
+        userAgent: requestUa,
+      });
+      if (!tokenInfo) {
+        logEvent('download_token_fail', row.id, hwidHash, requestIp, 'issue_failed');
+        return sendSigned(res.status(500), { ok: false, error: 'download_token_failed' });
+      }
+      const overlay = buildWatermarkOverlay({
+        watermark,
+        productCode: productRow.product_code,
+        tokenId: tokenInfo.tokenId,
+      });
+      payloadHash = computePayloadHashWithOverlay(productConfig.payload_path, overlay);
+      if (!payloadHash) {
+        payloadHash = productConfig.payload_hash || getPayloadHash(productConfig.payload_path);
+      }
+      dllUrl = `${config.baseUrl.replace(/\/$/, '')}/download?token=${encodeURIComponent(tokenInfo.token)}`;
     }
-    const dllUrl = `${config.baseUrl.replace(/\/$/, '')}/download?token=${encodeURIComponent(tokenInfo.token)}`;
 
     programs.push({
       code: productConfig.code,
@@ -1019,6 +1028,10 @@ app.post('/validate', (req, res) => {
 });
 
 app.get('/download', (req, res) => {
+  if (!legacyDownloadEnabled) {
+    logEvent('download_disabled', null, null, getRequestIp(req), 'legacy_disabled');
+    return res.status(410).json({ ok: false, error: 'download_disabled' });
+  }
   const token = req.query.token;
   const requestIp = getRequestIp(req);
   const requestUa = getRequestUserAgent(req);
@@ -1435,6 +1448,51 @@ app.get('/download-protected', (req, res) => {
     logEvent('download_protected_invalid', null, null, requestIp, 'invalid_token');
     return res.status(403).json({ ok: false, error: 'invalid_token' });
   }
+
+  if (downloadTokenRequireId && !payload.jti) {
+    logEvent('download_protected_invalid', null, payload.hwid_hash || null, requestIp, 'missing_token_id');
+    return res.status(403).json({ ok: false, error: 'invalid_token' });
+  }
+
+  if (downloadTokenRequireId || downloadTokenOneTime || downloadTokenBindIp || downloadTokenBindUserAgent || downloadTokenMaxPerHour > 0) {
+    const tokenRow = db.prepare('SELECT * FROM download_tokens WHERE token_id = ?').get(payload.jti);
+    if (!tokenRow) {
+      logEvent('download_protected_invalid', null, payload.hwid_hash || null, requestIp, 'token_unknown');
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+    if (tokenRow.expires_at && Date.now() > new Date(tokenRow.expires_at).getTime()) {
+      logEvent('download_protected_invalid', null, payload.hwid_hash || null, requestIp, 'token_expired');
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+    if (tokenRow.key_hash !== payload.key_hash || tokenRow.hwid_hash !== payload.hwid_hash) {
+      logEvent('download_protected_invalid', null, payload.hwid_hash || null, requestIp, 'token_mismatch');
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+    const expectedProduct = payload.product_code || null;
+    if ((tokenRow.product_code || null) !== expectedProduct) {
+      logEvent('download_protected_invalid', null, payload.hwid_hash || null, requestIp, 'token_product_mismatch');
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+    if (downloadTokenOneTime && tokenRow.used_at) {
+      logEvent('download_protected_invalid', null, payload.hwid_hash || null, requestIp, 'token_reuse');
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+    if (downloadTokenBindIp && tokenRow.issued_ip && tokenRow.issued_ip !== requestIp) {
+      logEvent('download_protected_invalid', null, payload.hwid_hash || null, requestIp, 'token_ip_mismatch');
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+    if (downloadTokenBindUserAgent && tokenRow.issued_ua && tokenRow.issued_ua !== requestUa) {
+      logEvent('download_protected_invalid', null, payload.hwid_hash || null, requestIp, 'token_ua_mismatch');
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+    if (downloadTokenMaxPerHour > 0) {
+      const count = countRecentDownloads(payload.key_hash, downloadTokenRateLimitMinutes);
+      if (count >= downloadTokenMaxPerHour) {
+        logEvent('download_rate_limit', null, payload.hwid_hash || null, requestIp, `limit=${downloadTokenMaxPerHour}`);
+        return res.status(429).json({ ok: false, error: 'rate_limited' });
+      }
+    }
+  }
   
   // Проверяем кэш
   const cached = protectedDllCache.get(payload.cache_key);
@@ -1449,6 +1507,12 @@ app.get('/download-protected', (req, res) => {
     return res.status(403).json({ ok: false, error: 'mismatch' });
   }
   
+  if ((downloadTokenOneTime || downloadTokenMaxPerHour > 0) && payload.jti) {
+    db.prepare(
+      'UPDATE download_tokens SET used_at = ?, used_ip = ?, used_ua = ? WHERE token_id = ?'
+    ).run(nowIso(), requestIp || null, requestUa || null, payload.jti);
+  }
+
   // Удаляем из кэша (одноразовое использование)
   protectedDllCache.delete(payload.cache_key);
   
