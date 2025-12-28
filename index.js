@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const net = require('net');
+const tls = require('tls');
 const express = require('express');
 const Database = require('better-sqlite3');
 
@@ -15,6 +17,17 @@ if (!config.pepper || config.pepper === 'change_me') {
   console.error('Set a strong pepper in config.json');
   process.exit(1);
 }
+
+const tcpPort = Number(config.tcp_port || config.tcpPort || 0);
+const tcpMaxFrameBytes = Number(config.tcp_max_frame_bytes || 0) || 50 * 1024 * 1024;
+const tcpTlsKeyPath = resolvePath(config.tcp_tls_key_path || config.tcp_tls_key);
+const tcpTlsCertPath = resolvePath(config.tcp_tls_cert_path || config.tcp_tls_cert);
+const tcpTlsCaPath = resolvePath(config.tcp_tls_ca_path || config.tcp_tls_ca);
+const tcpTlsEnabled = config.tcp_tls_enabled === false
+  ? false
+  : (config.tcp_tls_enabled === true || (tcpTlsKeyPath && tcpTlsCertPath));
+const payloadEncryptionEnabled =
+  config.payload_encrypt_enabled !== false && config.payload_encryption_enabled !== false;
 
 const storePlaintextKeys = config.store_plaintext_keys === true;
 const exposePlaintextKeys = config.expose_plaintext_keys === true || storePlaintextKeys;
@@ -190,10 +203,6 @@ const downloadTokenDefaultTtlSeconds = Number(config.download_token_ttl_seconds 
 const legacyDownloadEnabled = config.legacy_download_enabled === true;
 const watermarkEnabled = config.watermark_enabled !== false;
 const watermarkMaxBytes = Number(config.watermark_max_bytes || 256);
-const payloadEncryptionEnabled = config.payload_encryption_enabled !== false;
-const payloadEncryptionKeyBytes = Number(config.payload_encryption_key_bytes || 32);
-const payloadEncryptionIvBytes = Number(config.payload_encryption_iv_bytes || 12);
-const payloadEncryptionTagBytes = Number(config.payload_encryption_tag_bytes || 16);
 const WATERMARK_MAGIC = 'U3WM1';
 const WATERMARK_VERSION = 1;
 const PAYLOAD_MAGIC = 'U3E1';
@@ -782,7 +791,7 @@ function countRecentDownloads(keyHash, minutes) {
   return row ? row.count : 0;
 }
 
-app.post('/validate', (req, res) => {
+function handleValidate(req, res) {
   const key = (req.body && req.body.key) || '';
   const hwid = (req.body && req.body.hwid) || '';
   const loaderVersion = (req.body && req.body.version) || '';
@@ -1025,9 +1034,11 @@ app.post('/validate', (req, res) => {
     event_token: eventToken,
     programs,
   });
-});
+}
 
-app.get('/download', (req, res) => {
+app.post('/validate', handleValidate);
+
+function handleDownload(req, res) {
   if (!legacyDownloadEnabled) {
     logEvent('download_disabled', null, null, getRequestIp(req), 'legacy_disabled');
     return res.status(410).json({ ok: false, error: 'download_disabled' });
@@ -1154,7 +1165,9 @@ app.get('/download', (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Length', payloadBuffer.length);
   return res.send(payloadBuffer);
-});
+}
+
+app.get('/download', handleDownload);
 
 // Структура защиты для встраивания в DLL
 function buildProtectionOverlay(processInfo) {
@@ -1253,7 +1266,7 @@ function cleanupProtectedDllCache() {
 }
 
 // Endpoint для запроса защищённой DLL
-app.post('/request-dll', (req, res) => {
+function handleRequestDll(req, res) {
   const token = (req.body && req.body.token) || '';
   const productCode = sanitizeLogField((req.body && req.body.product_code) || '', 64);
   const processInfo = req.body && req.body.process_info;
@@ -1392,11 +1405,23 @@ app.post('/request-dll', (req, res) => {
   }
   
   // Сохраняем в кэш
+  let encKey = null;
+  let encIv = null;
+  let encAlg = null;
+  if (payloadEncryptionEnabled) {
+    encKey = crypto.randomBytes(32);
+    encIv = crypto.randomBytes(16);
+    encAlg = 'aes-256-cbc';
+  }
+
   protectedDllCache.set(cacheKey, {
     buffer: protectedBuffer,
     timestamp: Date.now(),
     keyHash,
     hwidHash,
+    encKey,
+    encIv,
+    encAlg,
   });
   
   // Вычисляем hash
@@ -1430,15 +1455,23 @@ app.post('/request-dll', (req, res) => {
   const dllUrl = `${config.baseUrl.replace(/\/$/, '')}/download-protected?token=${encodeURIComponent(downloadToken)}`;
   
   // Возвращаем успешный ответ
-  return res.status(200).json({
+  const responsePayload = {
     ok: true,
     dll_url: dllUrl,
     dll_sha256: dllHash,
-  });
-});
+  };
+  if (encKey && encIv) {
+    responsePayload.dll_key = encKey.toString('base64');
+    responsePayload.dll_iv = encIv.toString('base64');
+    responsePayload.dll_alg = encAlg;
+  }
+  return res.status(200).json(responsePayload);
+}
+
+app.post('/request-dll', handleRequestDll);
 
 // Endpoint для скачивания защищённой DLL
-app.get('/download-protected', (req, res) => {
+function handleDownloadProtected(req, res) {
   const token = req.query.token;
   const requestIp = getRequestIp(req);
   const requestUa = getRequestUserAgent(req);
@@ -1521,9 +1554,17 @@ app.get('/download-protected', (req, res) => {
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Content-Length', cached.buffer.length);
-  return res.send(cached.buffer);
-});
+  let payloadBuffer = cached.buffer;
+  if (cached.encKey && cached.encIv && cached.encAlg === 'aes-256-cbc') {
+    const cipher = crypto.createCipheriv(cached.encAlg, cached.encKey, cached.encIv);
+    payloadBuffer = Buffer.concat([cipher.update(payloadBuffer), cipher.final()]);
+  }
+
+  res.setHeader('Content-Length', payloadBuffer.length);
+  return res.send(payloadBuffer);
+}
+
+app.get('/download-protected', handleDownloadProtected);
 
 function requireAdmin(req, res, next) {
   const adminToken = config.admin_token || '';
@@ -1750,7 +1791,7 @@ app.get('/admin/events', requireAdmin, (req, res) => {
   return res.json(events);
 });
 
-app.post('/event', (req, res) => {
+function handleEvent(req, res) {
   const key = (req.body && req.body.key) || '';
   const hwid = (req.body && req.body.hwid) || '';
   const eventType = (req.body && req.body.type) || '';
@@ -1795,13 +1836,17 @@ app.post('/event', (req, res) => {
   const fullDetail = [detail, productCode ? `product=${productCode}` : ''].filter(Boolean).join(' | ');
   logEvent(eventType, row.id, hwidHash, req.ip, fullDetail || null);
   return res.json({ ok: true });
-});
+}
 
-app.get('/health', (_req, res) => {
+app.post('/event', handleEvent);
+
+function handleHealth(_req, res) {
   res.json({ ok: true });
-});
+}
 
-app.get('/update/latest', (_req, res) => {
+app.get('/health', handleHealth);
+
+function handleUpdateLatest(_req, res) {
   const url = config.update_url || '';
   const version = config.update_version || config.min_loader_version || '';
   const updatePath = config.update_path || '';
@@ -1820,9 +1865,11 @@ app.get('/update/latest', (_req, res) => {
   });
   const downloadUrl = `${config.baseUrl.replace(/\/$/, '')}/update/download?token=${encodeURIComponent(token)}`;
   return sendSignedUpdate(res, { ok: true, version, url: downloadUrl, sha256 });
-});
+}
 
-app.get('/update/download', (req, res) => {
+app.get('/update/latest', handleUpdateLatest);
+
+function handleUpdateDownload(req, res) {
   const token = req.query.token;
   const payload = verifyUpdateToken(token);
   if (!payload) {
@@ -1835,8 +1882,267 @@ app.get('/update/download', (req, res) => {
   }
   res.setHeader('Content-Type', 'application/octet-stream');
   return res.sendFile(resolvedPath);
-});
+}
+
+app.get('/update/download', handleUpdateDownload);
+
+function normalizeSocketIp(value) {
+  const text = String(value || '');
+  if (text.startsWith('::ffff:')) {
+    return text.slice(7);
+  }
+  return text;
+}
+
+function parseTcpRequestPayload(buffer) {
+  const text = buffer.toString('utf8');
+  const headerEnd = text.indexOf('\n\n');
+  const headerBlock = headerEnd >= 0 ? text.slice(0, headerEnd) : text;
+  const body = headerEnd >= 0 ? text.slice(headerEnd + 2) : '';
+  const lines = headerBlock.split('\n').map((line) => line.replace(/\r$/, ''));
+  const requestLine = lines.shift() || '';
+  const [methodRaw, pathRaw] = requestLine.trim().split(' ');
+  const headers = {};
+  for (const line of lines) {
+    if (!line) {
+      continue;
+    }
+    const idx = line.indexOf(':');
+    if (idx < 0) {
+      continue;
+    }
+    const key = line.slice(0, idx).trim().toLowerCase();
+    const value = line.slice(idx + 1).trim();
+    if (key) {
+      headers[key] = value;
+    }
+  }
+  return {
+    method: String(methodRaw || 'GET').toUpperCase(),
+    path: pathRaw || '/',
+    headers,
+    body,
+  };
+}
+
+function createTcpResponse() {
+  return {
+    statusCode: 200,
+    headers: {},
+    body: Buffer.alloc(0),
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    setHeader(name, value) {
+      this.headers[String(name || '').toLowerCase()] = String(value);
+      return this;
+    },
+    json(payload) {
+      this.body = Buffer.from(JSON.stringify(payload));
+      return this;
+    },
+    send(payload) {
+      if (Buffer.isBuffer(payload)) {
+        this.body = payload;
+      } else if (payload === undefined || payload === null) {
+        this.body = Buffer.alloc(0);
+      } else {
+        this.body = Buffer.from(String(payload), 'utf8');
+      }
+      return this;
+    },
+    sendFile(filePath) {
+      this.body = fs.readFileSync(filePath);
+      return this;
+    },
+  };
+}
+
+function handleTcpFiles(pathname, res) {
+  if (!staticFilesPath) {
+    return res.status(404).json({ ok: false, error: 'not_found' });
+  }
+  const base = path.resolve(staticFilesPath);
+  const relative = decodeURIComponent(pathname.slice('/files/'.length));
+  const resolved = path.resolve(base, relative);
+  if (!resolved.startsWith(base + path.sep) && resolved !== base) {
+    return res.status(403).json({ ok: false, error: 'invalid_path' });
+  }
+  if (!fs.existsSync(resolved)) {
+    return res.status(404).json({ ok: false, error: 'not_found' });
+  }
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile()) {
+    return res.status(404).json({ ok: false, error: 'not_found' });
+  }
+  res.setHeader('Content-Type', 'application/octet-stream');
+  return res.send(fs.readFileSync(resolved));
+}
+
+function dispatchTcpRequest({ method, path, headers, body, ip }) {
+  let pathname = '/';
+  let query = {};
+  try {
+    const url = new URL(`tcp://localhost${path}`);
+    pathname = url.pathname || '/';
+    query = Object.fromEntries(url.searchParams.entries());
+  } catch (_) {
+    pathname = path || '/';
+  }
+
+  let parsedBody = {};
+  if (body && body.trim()) {
+    try {
+      parsedBody = JSON.parse(body);
+    } catch (_) {
+      parsedBody = {};
+    }
+  }
+
+  const req = {
+    body: parsedBody,
+    query,
+    ip,
+    get(name) {
+      const key = String(name || '').toLowerCase();
+      return headers[key] || '';
+    },
+  };
+  const res = createTcpResponse();
+  const routeKey = `${method} ${pathname}`;
+
+  switch (routeKey) {
+    case 'POST /validate':
+      handleValidate(req, res);
+      break;
+    case 'POST /event':
+      handleEvent(req, res);
+      break;
+    case 'POST /request-dll':
+      handleRequestDll(req, res);
+      break;
+    case 'GET /download':
+      handleDownload(req, res);
+      break;
+    case 'GET /download-protected':
+      handleDownloadProtected(req, res);
+      break;
+    case 'GET /update/latest':
+      handleUpdateLatest(req, res);
+      break;
+    case 'GET /update/download':
+      handleUpdateDownload(req, res);
+      break;
+    case 'GET /health':
+      handleHealth(req, res);
+      break;
+    default:
+      if (pathname.startsWith('/files/')) {
+        handleTcpFiles(pathname, res);
+      } else {
+        res.status(404).json({ ok: false, error: 'not_found' });
+      }
+      break;
+  }
+
+  return res.body || Buffer.alloc(0);
+}
+
+function sendTcpFrame(socket, payload) {
+  const body = Buffer.isBuffer(payload) ? payload : Buffer.from(String(payload || ''), 'utf8');
+  const header = Buffer.alloc(4);
+  header.writeUInt32BE(body.length, 0);
+  socket.write(header);
+  if (body.length > 0) {
+    socket.write(body);
+  }
+}
+
+function startTcpServer() {
+  if (!Number.isFinite(tcpPort) || tcpPort <= 0) {
+    console.log('TCP server disabled (tcp_port not set).');
+    return;
+  }
+
+  let server;
+  let label = 'TCP';
+  if (tcpTlsEnabled) {
+    if (!tcpTlsKeyPath || !tcpTlsCertPath) {
+      console.error('TCP TLS enabled but key/cert path missing.');
+      return;
+    }
+    let tlsOptions;
+    try {
+      tlsOptions = {
+        key: fs.readFileSync(tcpTlsKeyPath),
+        cert: fs.readFileSync(tcpTlsCertPath),
+        minVersion: 'TLSv1.2',
+      };
+      if (tcpTlsCaPath) {
+        tlsOptions.ca = fs.readFileSync(tcpTlsCaPath);
+      }
+    } catch (err) {
+      console.error('Failed to load TCP TLS credentials:', err.message);
+      return;
+    }
+    label = 'TCPS';
+    server = tls.createServer(tlsOptions, (socket) => {
+      handleTcpSocket(socket);
+    });
+    server.on('tlsClientError', () => {});
+  } else {
+    server = net.createServer((socket) => {
+      handleTcpSocket(socket);
+    });
+  }
+
+  function handleTcpSocket(socket) {
+    let buffer = Buffer.alloc(0);
+    let handled = false;
+    socket.setNoDelay(true);
+
+    socket.on('data', (chunk) => {
+      if (handled) {
+        return;
+      }
+      buffer = Buffer.concat([buffer, chunk]);
+      while (!handled && buffer.length >= 4) {
+        const length = buffer.readUInt32BE(0);
+        if (length > tcpMaxFrameBytes) {
+          socket.destroy();
+          return;
+        }
+        if (buffer.length < 4 + length) {
+          return;
+        }
+        const payload = buffer.slice(4, 4 + length);
+        buffer = buffer.slice(4 + length);
+        handled = true;
+        const request = parseTcpRequestPayload(payload);
+        const requestIp = sanitizeLogField(normalizeSocketIp(socket.remoteAddress || ''), 64);
+        const response = dispatchTcpRequest({
+          method: request.method,
+          path: request.path,
+          headers: request.headers,
+          body: request.body,
+          ip: requestIp,
+        });
+        sendTcpFrame(socket, response);
+        socket.end();
+      }
+    });
+
+    socket.on('error', () => {});
+  }
+
+  server.listen(tcpPort, () => {
+    console.log(`${label} server listening on ${tcpPort}`);
+  });
+}
 
 app.listen(config.port, () => {
   console.log(`Loader server listening on ${config.port}`);
 });
+
+startTcpServer();

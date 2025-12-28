@@ -3,7 +3,7 @@
 License validation and payload delivery service.
 
 ## What this repo contains
-- Node.js API for validation, updates, and payload download.
+- TCP service for loader validation, updates, and payload download.
 - SQLite database for keys/devices.
 - Built-in admin panel at `/admin`.
 - Optional admin client in `admin-client/` (local-only UI that proxies admin API).
@@ -21,8 +21,12 @@ cp config.example.json config.json
 ```
 
 2) Edit `config.json`:
-- `baseUrl`: public URL (for example `https://example.com`)
-- `port`: listen port
+- `baseUrl`: public TCP base (for example `tcps://example.com:4000`)
+- `tcp_port`: TCP listen port for loader connections
+- `tcp_tls_key_path` / `tcp_tls_cert_path` (enable TLS on the TCP port)
+- `baseUrl` / `update_url` should use `tcps://` when TLS is enabled
+- `payload_encrypt_enabled` (per-download payload encryption)
+- `port`: HTTP listen port (admin panel + admin API)
 - `pepper`: long random secret used to hash keys
 - `admin_token`: long random secret for admin API
 - `response_signing_private_key_path` / `response_signing_public_key_path`
@@ -48,7 +52,8 @@ npm install
 npm start
 ```
 
-Admin panel: `https://your-domain/admin/`
+Admin panel (HTTP): `http://your-domain:3000/admin/`
+TCP server: `tcps://your-domain:4000`
 
 ## Create keys
 ```
@@ -82,9 +87,9 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now u3-server
 ```
 
-3) Put it behind a reverse proxy (nginx) for TLS.
+3) Optional: put the HTTP admin panel behind a reverse proxy (nginx) for TLS.
 
-### Nginx example (TLS reverse proxy)
+### Nginx example (TLS reverse proxy for admin)
 ```
 server {
     listen 80;
@@ -111,8 +116,7 @@ server {
     }
 }
 ```
-
-If you use a new TLS certificate, update the loader certificate thumbprint.
+Expose the TCP port separately (no HTTP/HTTPS for loader traffic).
 
 ## Admin client (optional)
 The admin client is included in `admin-client/` and binds to `127.0.0.1` only.
