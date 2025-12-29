@@ -71,6 +71,16 @@ function truncateText(value, maxLen) {
     return text.slice(0, maxLen - 3) + '...';
 }
 
+function getSelectedValues(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) {
+        return [];
+    }
+    return Array.from(select.options)
+        .filter(option => option.selected)
+        .map(option => option.value);
+}
+
 // API Request wrapper
 async function apiRequest(endpoint, options = {}) {
     if (!adminToken) {
@@ -220,6 +230,7 @@ function renderKeys(keys) {
                         <td>${escapeHtml(k.activated_at ? formatDate(k.activated_at) : '-')}</td>
                         <td>${escapeHtml(k.expires_at ? formatDate(k.expires_at) : '-')}</td>
                         <td class="actions">
+                            <button class="btn btn-sm btn-primary" onclick="showAssignProductsModal('${escapeAttr(k.key_plain || k.key_hash || '')}')">Products</button>
                             ${k.is_revoked ? 
                                 `<button class="btn btn-sm btn-success" onclick="unrevokeKey(${k.id})">Разблокировать</button>` :
                                 `<button class="btn btn-sm btn-danger" onclick="revokeKey(${k.id})">Заблокировать</button>`
@@ -467,9 +478,68 @@ function closeModal() {
     document.getElementById('createKeyModal').classList.remove('active');
 }
 
+function showAssignProductsModal(key) {
+    const keyInput = document.getElementById('assignKey');
+    const daysInput = document.getElementById('assignDays');
+    const select = document.getElementById('assignProducts');
+    if (keyInput) {
+        keyInput.value = key || '';
+    }
+    if (daysInput) {
+        daysInput.value = '';
+    }
+    if (select) {
+        Array.from(select.options).forEach(option => {
+            option.selected = false;
+        });
+    }
+    document.getElementById('assignProductsModal').classList.add('active');
+}
+
+function closeAssignModal() {
+    document.getElementById('assignProductsModal').classList.remove('active');
+}
+
+async function assignProducts() {
+    const key = String(document.getElementById('assignKey').value || '').trim();
+    const products = getSelectedValues('assignProducts');
+    const daysValue = Number(document.getElementById('assignDays').value);
+    if (!key) {
+        alert('Key is required');
+        return;
+    }
+    if (!products.length) {
+        alert('Select at least one product');
+        return;
+    }
+    const assignDays = Number.isFinite(daysValue) && daysValue > 0 ? daysValue : null;
+
+    try {
+        for (const productCode of products) {
+            const payload = { key, product_code: productCode };
+            if (assignDays) {
+                payload.days = assignDays;
+            }
+            await apiRequest('/admin/product/assign', {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+        }
+        alert('Products assigned');
+        closeAssignModal();
+        loadKeys();
+    } catch (err) {
+        alert('Dz¥^D,DñD§Dø: ' + err.message);
+    }
+}
+
 async function createKey() {
     const days = parseInt(document.getElementById('keyDays').value);
-    const product = document.getElementById('keyProduct').value;
+    const products = getSelectedValues('keyProducts');
+    if (!products.length) {
+        alert('Select at least one product');
+        return;
+    }
     
     if (!days || days < 1) {
         alert('Укажите количество дней');
@@ -479,7 +549,7 @@ async function createKey() {
     try {
         const result = await apiRequest('/admin/key/create', {
             method: 'POST',
-            body: JSON.stringify({ days, product })
+            body: JSON.stringify({ days, products })
         });
         
         alert(`Ключ создан:\n\n${result.key}\n\nСкопируйте его сейчас!`);
@@ -709,6 +779,3 @@ function parseDeviceInfo(value) {
         return {};
     }
 }
-
-
-
