@@ -257,6 +257,14 @@ db.exec(`
 `);
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS product_overrides (
+    product_code TEXT PRIMARY KEY,
+    status TEXT,
+    updated_at TEXT
+  )
+`);
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS license_devices (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key_id INTEGER NOT NULL,
@@ -310,6 +318,7 @@ function ensureColumn(table, column, type) {
 ensureColumn('license_keys', 'key_plain', 'TEXT');
 ensureColumn('license_devices', 'last_inject_at', 'TEXT');
 ensureColumn('license_devices', 'device_info', 'TEXT');
+ensureColumn('license_products', 'status', 'TEXT');
 
 const dropPlaintextKeys = config.drop_plaintext_keys !== false && !storePlaintextKeys;
 if (dropPlaintextKeys) {
@@ -372,6 +381,50 @@ function getRequestUserAgent(req) {
 function normalizeKey(rawKey) {
   return String(rawKey || '').trim();
 }
+
+function normalizeProductStatus(value) {
+  if (value === undefined || value === null) {
+    return '';
+  }
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) {
+    return '';
+  }
+  const disabled = new Set(['off', 'down', 'offline', 'disabled']);
+  if (disabled.has(normalized)) {
+    return 'disabled';
+  }
+  const allowed = new Set(['ready', 'updating', 'safe', 'risky', 'disabled']);
+  return allowed.has(normalized) ? normalized : null;
+}
+
+const productOverrides = new Map();
+
+function loadProductOverrides() {
+  productOverrides.clear();
+  const rows = db.prepare('SELECT product_code, status FROM product_overrides').all();
+  for (const row of rows) {
+    const normalized = normalizeProductStatus(row.status);
+    if (normalized) {
+      productOverrides.set(row.product_code, normalized);
+    }
+  }
+}
+
+function getProductOverrideStatus(productCode) {
+  return productOverrides.get(productCode) || '';
+}
+
+function resolveProductStatus(_rowStatus, overrideStatus, _configStatus) {
+  return normalizeProductStatus(overrideStatus) || 'disabled';
+}
+
+function isInjectableStatus(status) {
+  const normalized = normalizeProductStatus(status);
+  return normalized === 'safe' || normalized === 'risky';
+}
+
+loadProductOverrides();
 
 function isSha256Hex(value) {
   return /^[a-f0-9]{64}$/i.test(String(value || ''));
@@ -978,6 +1031,8 @@ function handleValidate(req, res) {
     if (!productConfig) {
       continue;
     }
+    const overrideStatus = getProductOverrideStatus(productRow.product_code);
+    const status = resolveProductStatus(productRow.status, overrideStatus, productConfig.status);
     const watermark = buildWatermarkId({
       keyHash,
       hwidHash,
@@ -1015,7 +1070,7 @@ function handleValidate(req, res) {
       updated_at: productConfig.updated_at,
       expires_at: productExpires ? productExpires.toISOString() : '',
       dll_url: dllUrl,
-      status: productConfig.status,
+      status,
       avatar_url: productConfig.avatar_url || '',
       watermark,
       payload_sha256: payloadHash,
@@ -1103,6 +1158,22 @@ function handleDownload(req, res) {
     logEvent('download_hwid_mismatch', row.id, payload.hwid_hash, requestIp, 'device_not_registered');
     maybeRevokeForEvent(row.id, 'download_hwid_mismatch');
     return res.status(403).json({ ok: false, error: 'hwid_mismatch' });
+  }
+  if (payload.product_code) {
+    const productRow = db.prepare(
+      'SELECT * FROM license_products WHERE key_id = ? AND product_code = ?'
+    ).get(row.id, payload.product_code);
+    if (!productRow) {
+      logEvent('download_invalid', row.id, payload.hwid_hash, requestIp, 'invalid_product');
+      return res.status(403).json({ ok: false, error: 'invalid_product' });
+    }
+    const productConfig = productMap.get(payload.product_code);
+    const overrideStatus = getProductOverrideStatus(payload.product_code);
+    const status = resolveProductStatus(productRow.status, overrideStatus, productConfig ? productConfig.status : '');
+    if (!isInjectableStatus(status)) {
+      logEvent('download_blocked', row.id, payload.hwid_hash, requestIp, `status=${status || 'unknown'}`);
+      return res.status(403).json({ ok: false, error: 'status_blocked' });
+    }
   }
   logEvent('download', row.id, payload.hwid_hash, requestIp, payload.product_code || 'default');
 
@@ -1348,6 +1419,12 @@ function handleRequestDll(req, res) {
     const productConfig = productMap.get(productCode);
     if (productConfig) {
       payloadPath = productConfig.payload_path;
+    }
+    const overrideStatus = getProductOverrideStatus(productCode);
+    const status = resolveProductStatus(productRow.status, overrideStatus, productConfig ? productConfig.status : '');
+    if (!isInjectableStatus(status)) {
+      logEvent('request_dll_blocked', row.id, hwidHash, requestIp, `status=${status || 'unknown'}`);
+      return res.status(403).json({ ok: false, error: 'status_blocked' });
     }
   } else {
     const expiresAt = row.expires_at ? new Date(row.expires_at) : null;
@@ -1610,6 +1687,55 @@ app.post('/admin/unrevoke', requireAdmin, (req, res) => {
   return res.json({ ok: true });
 });
 
+app.get('/admin/products', requireAdmin, (req, res) => {
+  const products = Array.from(productMap.values()).map((product) => {
+    const overrideStatus = getProductOverrideStatus(product.code);
+    const statusEffective = resolveProductStatus('', overrideStatus, product.status);
+    return {
+      code: product.code,
+      name: product.name,
+      status_override: overrideStatus,
+      status_effective: statusEffective,
+      updated_at: product.updated_at,
+      avatar_url: product.avatar_url || '',
+    };
+  });
+  return res.json({ ok: true, products });
+});
+
+app.post('/admin/product/status', requireAdmin, (req, res) => {
+  const productCode = (req.body && req.body.product_code) || '';
+  const statusRaw = req.body && Object.prototype.hasOwnProperty.call(req.body, 'status')
+    ? req.body.status
+    : undefined;
+  if (!productCode) {
+    return res.status(400).json({ ok: false, error: 'missing_product' });
+  }
+  if (statusRaw === undefined) {
+    return res.status(400).json({ ok: false, error: 'missing_status' });
+  }
+  if (!productMap.has(productCode)) {
+    return res.status(400).json({ ok: false, error: 'unknown_product' });
+  }
+  const normalizedStatus = normalizeProductStatus(statusRaw);
+  if (normalizedStatus === null) {
+    return res.status(400).json({ ok: false, error: 'invalid_status' });
+  }
+  if (!normalizedStatus) {
+    db.prepare('DELETE FROM product_overrides WHERE product_code = ?').run(productCode);
+    productOverrides.delete(productCode);
+    logEvent('admin_product_status', null, null, req.ip, `product=${productCode},status=default`);
+    return res.json({ ok: true });
+  }
+  db.prepare(
+    'INSERT INTO product_overrides (product_code, status, updated_at) VALUES (?, ?, ?) ' +
+    'ON CONFLICT(product_code) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at'
+  ).run(productCode, normalizedStatus, nowIso());
+  productOverrides.set(productCode, normalizedStatus);
+  logEvent('admin_product_status', null, null, req.ip, `product=${productCode},status=${normalizedStatus}`);
+  return res.json({ ok: true });
+});
+
 app.post('/admin/product/assign', requireAdmin, (req, res) => {
   const key = (req.body && req.body.key) || '';
   const productCode = (req.body && req.body.product_code) || '';
@@ -1798,17 +1924,36 @@ function handleEvent(req, res) {
   const token = (req.body && req.body.token) || '';
   const productCode = sanitizeLogField((req.body && req.body.product_code) || '', 64);
   const detail = sanitizeLogField((req.body && req.body.detail) || '', 512);
-  if (!key || !hwid || !eventType) {
+  if (!eventType) {
     return res.status(400).json({ ok: false, error: 'missing_fields' });
   }
-  const row = findKeyRow(key);
-  if (!row || row.is_revoked) {
-    return res.status(403).json({ ok: false, error: 'invalid_key' });
-  }
-  const hwidHash = hashHwid(hwid.trim());
   const tokenPayload = verifyUpdateToken(token);
-  if (!tokenPayload || tokenPayload.key_hash !== row.key_hash || tokenPayload.hwid_hash !== hwidHash) {
+  if (!tokenPayload) {
     return res.status(403).json({ ok: false, error: 'invalid_token' });
+  }
+  let row = null;
+  let hwidHash = '';
+  if (key && hwid) {
+    row = findKeyRow(key);
+    if (!row || row.is_revoked) {
+      return res.status(403).json({ ok: false, error: 'invalid_key' });
+    }
+    hwidHash = hashHwid(hwid.trim());
+    const keyHash = row.key_hash || hashKey(key);
+    if (tokenPayload.key_hash !== keyHash || tokenPayload.hwid_hash !== hwidHash) {
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+  } else {
+    const tokenKeyHash = String(tokenPayload.key_hash || '');
+    const tokenHwidHash = String(tokenPayload.hwid_hash || '');
+    if (!isSha256Hex(tokenKeyHash) || !isSha256Hex(tokenHwidHash)) {
+      return res.status(403).json({ ok: false, error: 'invalid_token' });
+    }
+    row = findKeyRow(tokenKeyHash);
+    if (!row || row.is_revoked) {
+      return res.status(403).json({ ok: false, error: 'invalid_key' });
+    }
+    hwidHash = tokenHwidHash;
   }
   const allowedTypes = new Set([
     'inject_ok',

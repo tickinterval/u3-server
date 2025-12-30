@@ -119,6 +119,7 @@ function switchTab(tab) {
     if (tab === 'keys') loadKeys();
     if (tab === 'devices') loadDevices();
     if (tab === 'events') loadEvents();
+    if (tab === 'products') loadProductStatuses();
 }
 
 // Load Dashboard
@@ -149,6 +150,109 @@ async function loadDashboard() {
         renderRecentEvents(events.slice(0, 10));
     } catch (err) {
         console.error('Failed to load dashboard:', err);
+    }
+}
+
+async function loadProductStatuses() {
+    const container = document.getElementById('productStatusList');
+    if (!container) {
+        return;
+    }
+    container.innerHTML = '<div class="loading">Loading...</div>';
+    try {
+        const response = await apiRequest('/admin/products');
+        const products = (response && response.products) ? response.products : [];
+        renderProductStatuses(products);
+    } catch (err) {
+        container.innerHTML = `<div class="loading">Failed to load products: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function renderProductStatuses(products) {
+    const container = document.getElementById('productStatusList');
+    if (!container) {
+        return;
+    }
+    if (!products.length) {
+        container.innerHTML = '<div class="loading">No products found</div>';
+        return;
+    }
+    const rows = products.map((product) => {
+        const code = escapeAttr(product.code || '');
+        const name = escapeHtml(product.name || product.code || '');
+        const statusEffective = escapeHtml(product.status_effective || '-');
+        const statusOverride = product.status_override || '';
+        const options = [
+            { value: '', label: 'Default (disabled)' },
+            { value: 'safe', label: 'Safe' },
+            { value: 'risky', label: 'Risky' },
+            { value: 'updating', label: 'Updating' },
+            { value: 'ready', label: 'Ready' },
+            { value: 'disabled', label: 'Disabled' },
+        ];
+        const select = options.map((opt) => {
+            const selected = opt.value === statusOverride ? ' selected' : '';
+            return `<option value="${opt.value}"${selected}>${opt.label}</option>`;
+        }).join('');
+        return `
+            <tr>
+                <td>${name} <span style="color:#718096;">(${code})</span></td>
+                <td>${statusEffective}</td>
+                <td>
+                    <select data-code="${code}" class="product-status-select">
+                        ${select}
+                    </select>
+                </td>
+                <td>
+                    <button class="btn btn-primary product-status-save" data-code="${code}">Save</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+
+    container.innerHTML = `
+        <table>
+            <thead>
+                <tr>
+                    <th>Product</th>
+                    <th>Effective</th>
+                    <th>Override</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                ${rows}
+            </tbody>
+        </table>
+    `;
+
+    container.querySelectorAll('.product-status-save').forEach((btn) => {
+        btn.addEventListener('click', () => updateProductStatus(btn.dataset.code || ''));
+    });
+}
+
+async function updateProductStatus(productCode) {
+    if (!productCode) {
+        return;
+    }
+    let select = null;
+    document.querySelectorAll('.product-status-select').forEach((el) => {
+        if (el.dataset.code === productCode) {
+            select = el;
+        }
+    });
+    if (!select) {
+        return;
+    }
+    const status = String(select.value || '');
+    try {
+        await apiRequest('/admin/product/status', {
+            method: 'POST',
+            body: JSON.stringify({ product_code: productCode, status })
+        });
+        loadProductStatuses();
+    } catch (err) {
+        alert('Failed to update status: ' + err.message);
     }
 }
 

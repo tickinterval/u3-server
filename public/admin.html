@@ -416,6 +416,7 @@
             <div class="tabs">
                 <div class="tab active" onclick="switchTab('dashboard')">📊 Дашборд</div>
                 <div class="tab" onclick="switchTab('keys')">🔑 Ключи</div>
+                <div class="tab" onclick="switchTab('products')">Products</div>
                 <div class="tab" onclick="switchTab('devices')">💻 Устройства</div>
                 <div class="tab" onclick="switchTab('events')">📝 Логи</div>
             </div>
@@ -451,6 +452,12 @@
                         <input type="text" id="keysSearch" placeholder="Search by key/hash (Enter for exact lookup)" onkeyup="filterKeys(event)">
                     </div>
                     <div id="keysList"></div>
+                </div>
+
+
+                <!-- Products Tab -->
+                <div id="products-tab" class="tab-content">
+                    <div id="productStatusList"></div>
                 </div>
 
                 <!-- Devices Tab -->
@@ -527,6 +534,7 @@
     <script src="admin.js"></script>
 </body>
 </html>
+
 
 
 
