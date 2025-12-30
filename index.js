@@ -212,15 +212,52 @@ const PROTECTION_VERSION = 1;
 
 const payloadCache = new Map();
 
+const ADMIN_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+  "object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const PERMISSIONS_POLICY =
+  'accelerometer=(), autoplay=(), camera=(), fullscreen=(), geolocation=(), ' +
+  'gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), usb=()';
+
+function applyBaseSecurityHeaders(res) {
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', PERMISSIONS_POLICY);
+  res.setHeader('Content-Security-Policy', ADMIN_CSP);
+}
+
+function applyNoStoreHeaders(res) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+  res.setHeader('Pragma', 'no-cache');
+}
+
+function applyAdminSecurityHeaders(res) {
+  applyBaseSecurityHeaders(res);
+  applyNoStoreHeaders(res);
+}
+
 const app = express();
 app.disable('x-powered-by');
 app.set('trust proxy', 'loopback');
 app.use(express.json({ limit: '1mb' }));
+app.use((req, res, next) => {
+  applyBaseSecurityHeaders(res);
+  next();
+});
 
 // Serve admin panel
 const publicPath = path.join(__dirname, 'public');
 if (fs.existsSync(publicPath)) {
-  app.use('/admin', express.static(publicPath));
+  app.use('/admin', (req, res, next) => {
+    applyAdminSecurityHeaders(res);
+    next();
+  });
+  app.use('/admin', express.static(publicPath, {
+    cacheControl: false,
+    setHeaders: (res) => applyAdminSecurityHeaders(res),
+  }));
 }
 
 if (staticFilesPath) {

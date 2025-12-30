@@ -8,6 +8,87 @@ let allEvents = [];
 // API Base URL
 const API_URL = window.location.origin;
 
+function initAdminUi() {
+    const tokenInput = document.getElementById('adminToken');
+    if (tokenInput) {
+        tokenInput.value = '';
+        tokenInput.addEventListener('keyup', (event) => {
+            if (event.key === 'Enter') {
+                login();
+            }
+        });
+    }
+
+    const loginBtn = document.getElementById('loginBtn');
+    if (loginBtn) {
+        loginBtn.addEventListener('click', login);
+    }
+
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', logout);
+    }
+
+    const showCreateKeyBtn = document.getElementById('showCreateKeyBtn');
+    if (showCreateKeyBtn) {
+        showCreateKeyBtn.addEventListener('click', showCreateKeyModal);
+    }
+
+    const closeCreateKeyBtn = document.getElementById('closeCreateKeyBtn');
+    if (closeCreateKeyBtn) {
+        closeCreateKeyBtn.addEventListener('click', closeModal);
+    }
+
+    const createKeyBtn = document.getElementById('createKeyBtn');
+    if (createKeyBtn) {
+        createKeyBtn.addEventListener('click', createKey);
+    }
+
+    const closeAssignProductsBtn = document.getElementById('closeAssignProductsBtn');
+    if (closeAssignProductsBtn) {
+        closeAssignProductsBtn.addEventListener('click', closeAssignModal);
+    }
+
+    const assignProductsBtn = document.getElementById('assignProductsBtn');
+    if (assignProductsBtn) {
+        assignProductsBtn.addEventListener('click', assignProducts);
+    }
+
+    document.querySelectorAll('.tab').forEach((tab) => {
+        tab.addEventListener('click', () => {
+            const tabId = tab.dataset.tab || '';
+            if (tabId) {
+                switchTab(tabId, tab);
+            }
+        });
+    });
+
+    const keysSearch = document.getElementById('keysSearch');
+    if (keysSearch) {
+        keysSearch.addEventListener('keyup', filterKeys);
+    }
+
+    const devicesSearch = document.getElementById('devicesSearch');
+    if (devicesSearch) {
+        devicesSearch.addEventListener('input', filterDevices);
+    }
+
+    const eventsSearch = document.getElementById('eventsSearch');
+    if (eventsSearch) {
+        eventsSearch.addEventListener('input', filterEvents);
+    }
+
+    const keysList = document.getElementById('keysList');
+    if (keysList) {
+        keysList.addEventListener('click', onKeysListClick);
+    }
+
+    const devicesList = document.getElementById('devicesList');
+    if (devicesList) {
+        devicesList.addEventListener('click', onDevicesListClick);
+    }
+}
+
 // Login
 function login() {
     const token = document.getElementById('adminToken').value.trim();
@@ -37,9 +118,7 @@ function logout() {
     document.getElementById('adminToken').value = '';
 }
 
-window.onload = function() {
-    document.getElementById('adminToken').value = '';
-};
+window.addEventListener('DOMContentLoaded', initAdminUi);
 
 function escapeHtml(value) {
     return String(value ?? '')
@@ -108,11 +187,14 @@ async function apiRequest(endpoint, options = {}) {
 }
 
 // Switch tabs
-function switchTab(tab) {
+function switchTab(tab, tabElement) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     
-    event.target.classList.add('active');
+    const tabNode = tabElement || document.querySelector(`.tab[data-tab="${tab}"]`);
+    if (tabNode) {
+        tabNode.classList.add('active');
+    }
     document.getElementById(`${tab}-tab`).classList.add('active');
     
     if (tab === 'dashboard') loadDashboard();
@@ -334,10 +416,10 @@ function renderKeys(keys) {
                         <td>${escapeHtml(k.activated_at ? formatDate(k.activated_at) : '-')}</td>
                         <td>${escapeHtml(k.expires_at ? formatDate(k.expires_at) : '-')}</td>
                         <td class="actions">
-                            <button class="btn btn-sm btn-primary" onclick="showAssignProductsModal('${escapeAttr(k.key_plain || k.key_hash || '')}')">Products</button>
+                            <button class="btn btn-sm btn-primary" data-action="assign-products" data-key="${escapeAttr(k.key_plain || k.key_hash || '')}">Products</button>
                             ${k.is_revoked ? 
-                                `<button class="btn btn-sm btn-success" onclick="unrevokeKey(${k.id})">Разблокировать</button>` :
-                                `<button class="btn btn-sm btn-danger" onclick="revokeKey(${k.id})">Заблокировать</button>`
+                                `<button class="btn btn-sm btn-success" data-action="unrevoke-key" data-id="${k.id}">Разблокировать</button>` :
+                                `<button class="btn btn-sm btn-danger" data-action="revoke-key" data-id="${k.id}">Заблокировать</button>`
                             }
                         </td>
                     </tr>
@@ -405,10 +487,10 @@ function renderDevices(devices) {
                             <td>${escapeHtml(formatDate(d.last_seen_at))}</td>
                             <td class="actions">
                                 ${d.is_revoked ?
-                                    `<button class="btn btn-sm btn-success" onclick="allowDevice(${d.id})">Разрешить</button>` :
-                                    `<button class="btn btn-sm btn-danger" onclick="revokeDevice(${d.id})">Заблокировать</button>`
+                                    `<button class="btn btn-sm btn-success" data-action="allow-device" data-id="${d.id}">Разрешить</button>` :
+                                    `<button class="btn btn-sm btn-danger" data-action="revoke-device" data-id="${d.id}">Заблокировать</button>`
                                 }
-                                <button class="btn btn-sm btn-primary" onclick="showDeviceInfo(${d.id})">Инфо</button>
+                                <button class="btn btn-sm btn-primary" data-action="show-device" data-id="${d.id}">Инфо</button>
                             </td>
                         </tr>
                     `;
@@ -571,6 +653,54 @@ function showDeviceInfo(id) {
     
     const info = parseDeviceInfo(device.device_info);
     alert('Device Info:\n\n' + JSON.stringify(info, null, 2));
+}
+
+function onKeysListClick(event) {
+    const button = event.target.closest('button');
+    if (!button) {
+        return;
+    }
+    const action = button.dataset.action || '';
+    if (action === 'assign-products') {
+        showAssignProductsModal(button.dataset.key || '');
+        return;
+    }
+    if (action === 'revoke-key') {
+        const id = Number(button.dataset.id);
+        if (Number.isFinite(id)) {
+            revokeKey(id);
+        }
+        return;
+    }
+    if (action === 'unrevoke-key') {
+        const id = Number(button.dataset.id);
+        if (Number.isFinite(id)) {
+            unrevokeKey(id);
+        }
+    }
+}
+
+function onDevicesListClick(event) {
+    const button = event.target.closest('button');
+    if (!button) {
+        return;
+    }
+    const action = button.dataset.action || '';
+    const id = Number(button.dataset.id);
+    if (!Number.isFinite(id)) {
+        return;
+    }
+    if (action === 'allow-device') {
+        allowDevice(id);
+        return;
+    }
+    if (action === 'revoke-device') {
+        revokeDevice(id);
+        return;
+    }
+    if (action === 'show-device') {
+        showDeviceInfo(id);
+    }
 }
 
 // Create key modal

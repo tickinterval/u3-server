@@ -398,7 +398,7 @@
                 <label>Admin Token</label>
                 <input type="password" id="adminToken" placeholder="Введите токен...">
             </div>
-            <button class="btn btn-primary" style="width: 100%;" onclick="login()">Войти</button>
+            <button class="btn btn-primary" id="loginBtn" style="width: 100%;">Войти</button>
         </div>
     </div>
 
@@ -408,17 +408,17 @@
             <div class="header">
                 <h1>🛡️ u3ware Admin Panel</h1>
                 <div class="header-actions">
-                    <button class="btn btn-primary" onclick="showCreateKeyModal()">➕ Создать ключ</button>
-                    <button class="btn btn-danger" onclick="logout()">Выход</button>
+                    <button class="btn btn-primary" id="showCreateKeyBtn">➕ Создать ключ</button>
+                    <button class="btn btn-danger" id="logoutBtn">Выход</button>
                 </div>
             </div>
 
             <div class="tabs">
-                <div class="tab active" onclick="switchTab('dashboard')">📊 Дашборд</div>
-                <div class="tab" onclick="switchTab('keys')">🔑 Ключи</div>
-                <div class="tab" onclick="switchTab('products')">Products</div>
-                <div class="tab" onclick="switchTab('devices')">💻 Устройства</div>
-                <div class="tab" onclick="switchTab('events')">📝 Логи</div>
+                <div class="tab active" data-tab="dashboard">📊 Дашборд</div>
+                <div class="tab" data-tab="keys">🔑 Ключи</div>
+                <div class="tab" data-tab="products">Products</div>
+                <div class="tab" data-tab="devices">💻 Устройства</div>
+                <div class="tab" data-tab="events">📝 Логи</div>
             </div>
 
             <div class="content">
@@ -449,7 +449,7 @@
                 <!-- Keys Tab -->
                 <div id="keys-tab" class="tab-content">
                     <div class="search-box">
-                        <input type="text" id="keysSearch" placeholder="Search by key/hash (Enter for exact lookup)" onkeyup="filterKeys(event)">
+                        <input type="text" id="keysSearch" placeholder="Search by key/hash (Enter for exact lookup)">
                     </div>
                     <div id="keysList"></div>
                 </div>
@@ -463,7 +463,7 @@
                 <!-- Devices Tab -->
                 <div id="devices-tab" class="tab-content">
                     <div class="search-box">
-                        <input type="text" id="devicesSearch" placeholder="🔍 Поиск по HWID..." onkeyup="filterDevices()">
+                        <input type="text" id="devicesSearch" placeholder="🔍 Поиск по HWID...">
                     </div>
                     <div id="devicesList"></div>
                 </div>
@@ -471,7 +471,7 @@
                 <!-- Events Tab -->
                 <div id="events-tab" class="tab-content">
                     <div class="search-box">
-                        <input type="text" id="eventsSearch" placeholder="🔍 Поиск..." onkeyup="filterEvents()">
+                        <input type="text" id="eventsSearch" placeholder="🔍 Поиск...">
                     </div>
                     <div id="eventsList"></div>
                 </div>
@@ -497,8 +497,8 @@
                 <div class="hint">Hold Ctrl/Command to select multiple products</div>
             </div>
             <div class="modal-actions">
-                <button class="btn" onclick="closeModal()">Отмена</button>
-                <button class="btn btn-primary" onclick="createKey()">Создать</button>
+                <button class="btn" id="closeCreateKeyBtn">Отмена</button>
+                <button class="btn btn-primary" id="createKeyBtn">Создать</button>
             </div>
         </div>
     </div>
@@ -525,8 +525,8 @@
                 <input type="number" id="assignDays" min="1" placeholder="Default key days">
             </div>
             <div class="modal-actions">
-                <button class="btn" onclick="closeAssignModal()">Cancel</button>
-                <button class="btn btn-primary" onclick="assignProducts()">Assign</button>
+                <button class="btn" id="closeAssignProductsBtn">Cancel</button>
+                <button class="btn btn-primary" id="assignProductsBtn">Assign</button>
             </div>
         </div>
     </div>
