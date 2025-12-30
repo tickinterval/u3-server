@@ -856,14 +856,14 @@ function handleValidate(req, res) {
     logEvent('validate_missing', null, null, requestIp, 'missing_key_or_hwid');
     return sendSigned(res.status(400), { ok: false, error: 'missing_key_or_hwid' });
   }
-  
+
   // HWID Spoof Detection - автоблокировка при высоком score
   if (hwidScore >= 70) {
-    logEvent('hwid_spoof_blocked', null, null, requestIp, 
+    logEvent('hwid_spoof_blocked', null, null, requestIp,
       `score=${hwidScore},flags=${hwidFlags.join(',')}`);
     return sendSigned(res.status(403), { ok: false, error: 'hwid_invalid' });
   }
-  
+
   // Логируем подозрительные HWID
   if (hwidScore >= 50) {
     logEvent('hwid_suspicious', null, null, requestIp,
@@ -894,7 +894,7 @@ function handleValidate(req, res) {
     deviceInfo.hwid_flags = hwidFlags;
   }
   deviceInfo.last_hwid_check = nowIso();
-  
+
   const now = new Date();
   let activatedAt = row.activated_at ? new Date(row.activated_at) : null;
   let expiresAt = row.expires_at ? new Date(row.expires_at) : null;
@@ -1246,11 +1246,11 @@ function buildProtectionOverlay(processInfo) {
     console.error('[buildProtectionOverlay] Invalid processInfo:', typeof processInfo, processInfo);
     return null;
   }
-  
+
   // Ограничиваем количество модулей и функций, чтобы не превысить лимит
   const maxModules = 50;
   const maxFunctions = 20;
-  
+
   const protection = {
     cpuid: Number(processInfo.cpuid) || 0,
     timestamp: Number(processInfo.timestamp) || Date.now(),
@@ -1270,10 +1270,10 @@ function buildProtectionOverlay(processInfo) {
         address: String(func.address || '0x0').substring(0, 32),
       })),
   };
-  
+
   const json = JSON.stringify(protection);
   const data = Buffer.from(json, 'utf8');
-  
+
   if (data.length > 4096) {
     console.error('[buildProtectionOverlay] Data too large:', data.length, 'bytes');
     // Пытаемся уменьшить размер, убрав часть данных
@@ -1291,13 +1291,13 @@ function buildProtectionOverlay(processInfo) {
     header.writeUInt32LE(data2.length, 6);
     return Buffer.concat([header, data2]);
   }
-  
+
   // Формат: MAGIC (5 байт) + VERSION (1 байт) + LENGTH (4 байта LE) + DATA
   const header = Buffer.alloc(10);
   header.write(PROTECTION_MAGIC, 0, 'ascii');
   header.writeUInt8(PROTECTION_VERSION, 5);
   header.writeUInt32LE(data.length, 6);
-  
+
   return Buffer.concat([header, data]);
 }
 
@@ -1307,7 +1307,7 @@ function buildProtectedPayload(payloadPath, protectionOverlay, watermarkOverlay)
   if (!buffer) {
     return null;
   }
-  
+
   const overlays = [];
   if (watermarkOverlay) {
     overlays.push(watermarkOverlay);
@@ -1315,11 +1315,11 @@ function buildProtectedPayload(payloadPath, protectionOverlay, watermarkOverlay)
   if (protectionOverlay) {
     overlays.push(protectionOverlay);
   }
-  
+
   if (overlays.length === 0) {
     return buffer;
   }
-  
+
   return Buffer.concat([buffer, ...overlays]);
 }
 
@@ -1343,7 +1343,7 @@ function handleRequestDll(req, res) {
   const processInfo = req.body && req.body.process_info;
   const requestIp = getRequestIp(req);
   const requestUa = getRequestUserAgent(req);
-  
+
   // Логируем входящий запрос для отладки
   console.log('[request-dll] Received request:', {
     hasToken: !!token,
@@ -1353,12 +1353,12 @@ function handleRequestDll(req, res) {
     processInfoType: typeof processInfo,
     processInfoKeys: processInfo ? Object.keys(processInfo) : [],
   });
-  
+
   if (!token) {
     console.error('[request-dll] Missing token');
     return res.status(400).json({ ok: false, error: 'missing_token' });
   }
-  
+
   // Обрабатываем случай, когда process_info может быть строкой (если Express не распарсил)
   let parsedProcessInfo = processInfo;
   if (typeof processInfo === 'string') {
@@ -1369,29 +1369,29 @@ function handleRequestDll(req, res) {
       return res.status(400).json({ ok: false, error: 'invalid_process_info_format' });
     }
   }
-  
+
   if (!parsedProcessInfo || typeof parsedProcessInfo !== 'object' || Array.isArray(parsedProcessInfo)) {
     console.error('[request-dll] Missing or invalid processInfo:', typeof parsedProcessInfo, parsedProcessInfo);
     return res.status(400).json({ ok: false, error: 'missing_process_info' });
   }
-  
+
   // Проверяем event token
   const tokenPayload = verifyUpdateToken(token);
   if (!tokenPayload) {
     logEvent('request_dll_invalid', null, null, requestIp, 'invalid_token');
     return res.status(403).json({ ok: false, error: 'invalid_token' });
   }
-  
+
   const keyHash = tokenPayload.key_hash;
   const hwidHash = tokenPayload.hwid_hash;
-  
+
   // Проверяем ключ
   const row = db.prepare('SELECT * FROM license_keys WHERE key_hash = ?').get(keyHash);
   if (!row || row.is_revoked) {
     logEvent('request_dll_invalid', row ? row.id : null, hwidHash, requestIp, 'invalid_key');
     return res.status(403).json({ ok: false, error: 'invalid_key' });
   }
-  
+
   // Проверяем устройство
   const deviceRow = db.prepare(
     'SELECT id FROM license_devices WHERE key_id = ? AND hwid_hash = ? AND is_revoked = 0'
@@ -1400,7 +1400,7 @@ function handleRequestDll(req, res) {
     logEvent('request_dll_hwid_mismatch', row.id, hwidHash, requestIp, 'device_not_registered');
     return res.status(403).json({ ok: false, error: 'hwid_mismatch' });
   }
-  
+
   // Определяем путь к payload
   let payloadPath = config.payloadPath;
   if (productCode) {
@@ -1433,13 +1433,13 @@ function handleRequestDll(req, res) {
       return res.status(403).json({ ok: false, error: 'expired' });
     }
   }
-  
+
   const resolvedPath = path.resolve(__dirname, payloadPath || './data/payload.dll');
   if (!fs.existsSync(resolvedPath)) {
     logEvent('request_dll_missing', row.id, hwidHash, requestIp, 'missing_payload');
     return res.status(404).json({ ok: false, error: 'missing_payload' });
   }
-  
+
   // Генерируем уникальный ключ для кэша
   const cacheKey = crypto.createHash('sha256')
     .update(keyHash)
@@ -1449,10 +1449,10 @@ function handleRequestDll(req, res) {
     .update(String(Date.now())) // Уникальность для каждого запроса
     .digest('hex')
     .slice(0, 32);
-  
+
   // Очищаем старые записи
   cleanupProtectedDllCache();
-  
+
   // Генерируем overlay с защитой
   const protectionOverlay = buildProtectionOverlay(parsedProcessInfo);
   if (!protectionOverlay) {
@@ -1460,7 +1460,7 @@ function handleRequestDll(req, res) {
     logEvent('request_dll_fail', row.id, hwidHash, requestIp, 'protection_overlay_failed');
     return res.status(500).json({ ok: false, error: 'protection_failed' });
   }
-  
+
   // Генерируем watermark overlay
   const watermarkId = buildWatermarkId({
     keyHash,
@@ -1473,14 +1473,14 @@ function handleRequestDll(req, res) {
     productCode: productCode || 'default',
     tokenId,
   });
-  
+
   // Собираем защищённую DLL
   const protectedBuffer = buildProtectedPayload(resolvedPath, protectionOverlay, watermarkOverlay);
   if (!protectedBuffer) {
     logEvent('request_dll_fail', row.id, hwidHash, requestIp, 'build_failed');
     return res.status(500).json({ ok: false, error: 'build_failed' });
   }
-  
+
   // Сохраняем в кэш
   let encKey = null;
   let encIv = null;
@@ -1500,10 +1500,10 @@ function handleRequestDll(req, res) {
     encIv,
     encAlg,
   });
-  
+
   // Вычисляем hash
   const dllHash = crypto.createHash('sha256').update(protectedBuffer).digest('hex');
-  
+
   // Генерируем токен для скачивания
   const downloadTokenTtl = getDownloadTokenTtlSeconds();
   const downloadTokenPayload = {
@@ -1517,7 +1517,7 @@ function handleRequestDll(req, res) {
     downloadTokenPayload.product_code = productCode;
   }
   const downloadToken = makeDownloadToken(downloadTokenPayload);
-  
+
   // Сохраняем токен в БД
   try {
     db.prepare(
@@ -1526,11 +1526,11 @@ function handleRequestDll(req, res) {
   } catch (err) {
     // Игнорируем ошибки (возможно дубликат)
   }
-  
+
   logEvent('request_dll_ok', row.id, hwidHash, requestIp, productCode || 'default');
-  
+
   const dllUrl = `${config.baseUrl.replace(/\/$/, '')}/download-protected?token=${encodeURIComponent(downloadToken)}`;
-  
+
   // Возвращаем успешный ответ
   const responsePayload = {
     ok: true,
@@ -1553,7 +1553,7 @@ function handleDownloadProtected(req, res) {
   const requestIp = getRequestIp(req);
   const requestUa = getRequestUserAgent(req);
   const payload = verifyDownloadToken(token);
-  
+
   if (!payload || !payload.cache_key) {
     logEvent('download_protected_invalid', null, null, requestIp, 'invalid_token');
     return res.status(403).json({ ok: false, error: 'invalid_token' });
@@ -1603,20 +1603,20 @@ function handleDownloadProtected(req, res) {
       }
     }
   }
-  
+
   // Проверяем кэш
   const cached = protectedDllCache.get(payload.cache_key);
   if (!cached) {
     logEvent('download_protected_expired', null, payload.hwid_hash || null, requestIp, 'cache_expired');
     return res.status(403).json({ ok: false, error: 'expired' });
   }
-  
+
   // Проверяем соответствие
   if (cached.keyHash !== payload.key_hash || cached.hwidHash !== payload.hwid_hash) {
     logEvent('download_protected_mismatch', null, payload.hwid_hash || null, requestIp, 'mismatch');
     return res.status(403).json({ ok: false, error: 'mismatch' });
   }
-  
+
   if ((downloadTokenOneTime || downloadTokenMaxPerHour > 0) && payload.jti) {
     db.prepare(
       'UPDATE download_tokens SET used_at = ?, used_ip = ?, used_ua = ? WHERE token_id = ?'
@@ -1625,9 +1625,9 @@ function handleDownloadProtected(req, res) {
 
   // Удаляем из кэша (одноразовое использование)
   protectedDllCache.delete(payload.cache_key);
-  
+
   logEvent('download_protected', null, payload.hwid_hash || null, requestIp, payload.product_code || 'default');
-  
+
   res.setHeader('Content-Type', 'application/octet-stream');
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -1959,7 +1959,8 @@ function handleEvent(req, res) {
     'inject_ok',
     'inject_fail',
     'download_fail',
-    'verify_fail'
+    'verify_fail',
+    'heartbeat'
   ]);
   if (!allowedTypes.has(eventType)) {
     return res.status(400).json({ ok: false, error: 'invalid_event' });
@@ -1973,14 +1974,19 @@ function handleEvent(req, res) {
 
   const deviceInfo = normalizeDeviceInfo(collectDeviceInfo(req.body));
   const deviceInfoJson = deviceInfo && Object.keys(deviceInfo).length > 0 ? JSON.stringify(deviceInfo) : null;
-  if (eventType === 'inject_ok') {
+  if (eventType === 'inject_ok' || eventType === 'heartbeat') {
     db.prepare(
-      'UPDATE license_devices SET last_inject_at = ?, device_info = COALESCE(?, device_info) WHERE id = ?'
-    ).run(nowIso(), deviceInfoJson, deviceRow.id);
+      'UPDATE license_devices SET last_seen_at = ?, last_inject_at = COALESCE(?, last_inject_at), device_info = COALESCE(?, device_info) WHERE id = ?'
+    ).run(nowIso(), eventType === 'inject_ok' ? nowIso() : null, deviceInfoJson, deviceRow.id);
   }
+
   const fullDetail = [detail, productCode ? `product=${productCode}` : ''].filter(Boolean).join(' | ');
   logEvent(eventType, row.id, hwidHash, req.ip, fullDetail || null);
-  return res.json({ ok: true });
+
+  // Генерируем временный сессионный ключ для пейлоада
+  const sessionKey = crypto.randomBytes(16).toString('hex');
+
+  return res.json({ ok: true, session_key: sessionKey });
 }
 
 app.post('/event', handleEvent);
@@ -2235,7 +2241,7 @@ function startTcpServer() {
     server = tls.createServer(tlsOptions, (socket) => {
       handleTcpSocket(socket);
     });
-    server.on('tlsClientError', () => {});
+    server.on('tlsClientError', () => { });
   } else {
     server = net.createServer((socket) => {
       handleTcpSocket(socket);
@@ -2278,7 +2284,7 @@ function startTcpServer() {
       }
     });
 
-    socket.on('error', () => {});
+    socket.on('error', () => { });
   }
 
   server.listen(tcpPort, () => {
